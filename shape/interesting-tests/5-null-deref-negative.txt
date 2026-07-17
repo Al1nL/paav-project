@@ -1,0 +1,11 @@
+x t p
+
+L0  x := NULL          L1
+L1  x := new            L2
+L2  assume(TRUE)        L3
+L2  assume(TRUE)        L5
+L3  x := NULL           L4
+L4  skip                L6
+L5  skip                L6
+L6  t := x.n            L7
+L7  assert (t = NULL)   L8

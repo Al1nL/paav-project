@@ -1,0 +1,8 @@
+i j k
+
+L0  i := ?                                  L1
+L1  j := i                                  L2
+L2  k := j + 1                              L3
+L3  i := k                                  L4
+L4  assert (EVEN i EVEN k) (ODD i ODD k)    L5
+L5  assert (EVEN i ODD j) (ODD i EVEN j)    L6

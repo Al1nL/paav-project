@@ -1,0 +1,46 @@
+x y z xx yy zz t p
+
+L8 t := new     L9 
+L9 t.n := NULL  L10 
+L10 t.n := x    L11
+L11 x := t      L12 
+
+L12 t := new    L13  
+L13 t.n := NULL L14 
+L14 t.n := y    L15 
+L15 y := t      L6 
+
+L6 assume(TRUE) L8 
+L6 assume(TRUE) L18 
+
+L18 z := new    L19
+L19 p := z      L20
+ 
+L20 xx := x            L21
+L21 t := xx.n          L22
+L22 assume(t = NULL)   L30
+L22 assume(t != NULL)  L23
+L23 xx := t            L21
+
+L30 yy := y            L31
+L31 t := yy.n          L32
+L32 assume(t = NULL)   L40
+L32 assume(t != NULL)  L35
+L35 yy := t            L31
+
+L40 xx.n := NULL       L41 
+L41 xx.n := z          L42 
+
+L42 skip               L43 
+L43 skip               L50
+
+L50 assert (t = NULL)  L51
+L51 assert (z != NULL) L52
+L52 assert (LS x p)	   L53
+L53 assert (LS y yy)   L54
+L54 assert (NOLS x y)  L55
+L55 assert (p = xx.n)  L56
+L56 assert (t = yy.n)  L57
+
+L57 assert (ODD x xx ) (EVEN x xx)  L58
+L58 assert (ODD x xx ) (ODD x z)    L59
