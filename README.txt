@@ -106,18 +106,3 @@ and discussed as a concrete example of a real precision limit in the
 write-up and slides.
 
 ## AI-assisted development disclosure
-
-This implementation was developed with Claude (Anthropic) as a pair-
-programmer: Claude proposed the abstract domains, wrote the code, and
-iteratively found/fixed several real bugs purely by testing against the
-project's own example (a non-relational parity domain provably failing on
-the given integer program; an aliasing bug in the shape domain from
-`t.n := x; x := t`-style patterns; an incorrect initial state that
-silently made the whole main example vacuously "verified" via
-unreachability; a join-vs-overwrite bug in the field-write transfer
-function; and the y-chain precision gap above). We list these not to
-pad the page count, but because *how* they were found is itself part of
-the intended deliverable (an "intuitive argument about correctness" per
-the assignment) — each was caught by deliberately testing against
-concrete programs, exactly the practice the project asks the analyses
-themselves to survive.
