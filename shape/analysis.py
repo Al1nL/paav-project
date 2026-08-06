@@ -1,5 +1,6 @@
-import sys
+import glob
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -637,5 +638,14 @@ def run_file(path):
 
 
 if __name__ == "__main__":
-    for p in sys.argv[1:]:
-        run_file(p)
+    for arg in sys.argv[1:]:
+        # Expand wildcard patterns like 'interesting-tests/*.txt'
+        matched_files = glob.glob(arg)
+
+        if not matched_files:
+            # If glob finds no matches, pass the raw argument so Python raises a standard error
+            run_file(arg)
+        else:
+            # Run all matching files in sorted order
+            for p in sorted(matched_files):
+                run_file(p)
