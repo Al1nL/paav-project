@@ -152,6 +152,34 @@ def check_memory_safety(s, ptr_idx):
     return s.nullity[ptr_idx] != D.NONNULL
 
 
+def _resolve_succ(s, w):
+    """s.succ[w], except a succ entry that points at a variable slot now
+    proven NULL is reported as the literal "NULL" -- both describe the same
+    heap fact ("w.n is the null value").
+
+    Two things create such entries:
+      * `t.n := x` recorded while x was still NULL (early in the fixpoint,
+        before x's list was built) -- a genuine pre-existing case;
+      * do_assign_deref now records `succ[y] = x` on *every* branch, including
+        the one where `y.n` turned out to be NULL (x is then a NULL slot), so
+        the exact `y.n == x` relationship is representation-identical on all
+        paths and survives their CFG join -- without this, a join of the
+        "y.n is NULL" path (succ[y] == "NULL") with a "y.n is a real node"
+        path collapsed succ[y] to None and drove reach[y][y.n] to TOP, which
+        is what left the y-traversal assertions (`LS y yy`, `t = yy.n`)
+        unprovable on the main example.
+
+    Consumers that branch on succ (sharing check, deref-atom evaluation,
+    assert consistency links) must treat these exactly like "NULL" rather
+    than as a live forward n-pointer; that is what this resolver is for.
+    `free_var_slot` already redirects such an entry to the scratch slot the
+    moment its target variable is reassigned, so it can never go stale."""
+    v = s.succ[w]
+    if isinstance(v, int) and s.nullity[v] == D.NULL:
+        return "NULL"
+    return v
+
+
 def would_create_cycle(s, x, y):
     """Would writing x.n := y close a cycle? True/False/'MAYBE' (unknown)."""
     if eq_effective(s, x, y) == D.TRUE:
@@ -171,7 +199,7 @@ def find_sharing_conflict(s, x, y):
     for z in range(n):
         if z == x or eq_effective(s, z, x) == D.TRUE:
             continue
-        sz = s.succ[z]
+        sz = _resolve_succ(s, z)
         if sz is None or sz == "NULL":
             continue
         if sz == y or eq_effective(s, sz, y) == D.TRUE:
@@ -303,7 +331,12 @@ def do_assign_deref(s, x, y, aux=None):
 
     succ_y = s.succ[y]
     if succ_y == "NULL":
-        return reset_as_null(s, x, aux)
+        out = reset_as_null(s, x, aux)
+        # Record `succ[y] = x` even though x is NULL on this path, so the
+        # exact `y.n == x` fact is representation-identical to the other two
+        # branches and survives their CFG join. _resolve_succ collapses this
+        # back to "NULL" for every consumer that branches on succ.
+        return D.set_succ(out, y, x)
     if succ_y is not None:
         # x becomes an alias of the already-known successor `succ_y`. In
         # addition to copying succ_y's own facts, ALSO derive reach purely
@@ -319,7 +352,11 @@ def do_assign_deref(s, x, y, aux=None):
         for z in range(n):
             derived = D.reach_shift(old_reach_col_y[z])
             out = D.set_reach(out, z, x, _combine_prefer_derived(out.reach[z][x], derived))
-        return out
+        # x is now the node y.n (aliased to succ_y): record `succ[y] = x`
+        # too, matching the other two branches, so the exact `y.n == x` fact
+        # is representation-identical on all paths and survives their join
+        # (the assert checker reads it back through _resolve_succ).
+        return D.set_succ(out, y, x)
 
     # unknown successor: materialize x as the (fresh, newly-named) node y.n
     n = s.n
@@ -459,7 +496,7 @@ def _gather_cells(orc, s, var_index):
             cells[key] = {"EQ"} if v == D.TRUE else {"NEQ"} if v == D.FALSE else {"EQ", "NEQ"}
 
     def add_deref(x, y):
-        sy = s.succ[y]
+        sy = _resolve_succ(s, y)
         if sy == "NULL":
             add_nullity(x)
         elif sy is not None:
@@ -505,7 +542,7 @@ def _atom_truth(atom, assignment, s, var_index):
         return assignment[("reach", x, y)] == kind
     if kind == "EQ_DEREF":
         x, y = var_index[a], var_index[b]
-        sy = s.succ[y]
+        sy = _resolve_succ(s, y)
         if sy == "NULL":
             return assignment[("nullity", x)] == D.NULL
         elif sy is not None:
@@ -546,7 +583,7 @@ def check_assert(s, orc, var_index):
         _, a1, b1 = k1
         for k2 in reach_keys:
             _, a2, b2 = k2
-            if a1 == a2 and s.succ[b1] == b2:
+            if a1 == a2 and _resolve_succ(s, b1) == b2:
                 links.append((k1, k2))
 
     for combo in itertools.product(*domains):

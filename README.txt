@@ -31,12 +31,13 @@ python3 -m shape.analysis shape/interesting-tests/*.txt        # run all 5
 
 Each run prints, per `assert` edge in the program: `VERIFIED` (the
 analysis proved the assertion holds on every execution) or `POSSIBLY
-VIOLATED` (the analysis could not prove it — either because it's a real
-bug, or a real precision limit of the abstraction; test 3 in each suite is
-a deliberate example of the former, and the shape suite's known limitation
-below is an example of the latter). Shape analysis additionally reports
-`VIOLATION` lines for memory-safety / cycle / sharing problems, found by a
-post-hoc check against the converged fixpoint at each mutating command.
+VIOLATED` (the analysis could not prove it — either because the assertion
+is actually false on some path, or because of a precision limit of the
+abstraction). Parity test 3 and shape test 4 each contain an assertion
+that is genuinely false and is correctly reported as `POSSIBLY VIOLATED`.
+Shape analysis additionally reports `VIOLATION` lines for memory-safety /
+cycle / sharing problems, found by a post-hoc check against the converged
+fixpoint at each mutating command.
 
 ## Input format
 
@@ -83,26 +84,46 @@ Each analysis has exactly 5 "interesting" test programs in its
 2. `2-sharing-violation.txt` — PDF "Additional examples" #1: correctly
    reports a SHARING violation.
 3. `3-cycle-violation.txt` — PDF "Additional examples" #2: correctly
-   reports a (possible) CYCLE violation.
-4. `4-merge-aliasing.txt` — PDF "Additional examples" #3: the added
-   `assert (LS y xx)` is correctly reported as unverifiable.
+   reports a CYCLE violation (definite — the analysis proves `y` reaches
+   `yy`, so `yy.n := y` must close a cycle).
+4. `4-merge-aliasing.txt` — PDF "Additional examples" #3: safety holds and
+   every assertion verifies except `t = yy.n`, which is genuinely false
+   here (`yy.n` has been reset to `x`, a non-null node, while `t` is NULL)
+   and is correctly reported as `POSSIBLY VIOLATED`. The added
+   `assert (LS y xx)` — expected to exceed the abstraction's precision in
+   the original write-up — now verifies: after `yy.n := x` splices `x`'s
+   list onto `y`'s tail, `y` provably reaches `xx`.
 5. `5-null-deref-negative.txt` — our own negative test: a pointer that's
    only *sometimes* re-nulled before a dereference; correctly reported as
    a MEMORY SAFETY violation.
 
-## Known precision limitation (shape analysis)
+## Shape analysis — resolved `y`-side precision gap
 
-On the main example, the `x`-side assertions (`LS x p`,
-`(ODD x xx)(EVEN x xx)`, `(ODD x xx)(ODD x z)`) all verify. The
-structurally symmetric `y`-side assertions (`LS y yy`, `t = yy.n`) do not
-verify, even though they are true. This was tracked down (see inline
-comments in `shape/analysis.py` and the design-decisions log) to a
-self-consistent but overly-coarse fixed point our domain reaches for the
-`y`-traversal loop specifically — confirmed to be a genuine stable fixed
-point (not an under-iterated computation) rather than an outright
-soundness bug. We were not able to fully resolve the `x`/`y` asymmetry
-within the project's time budget; it's flagged here rather than hidden,
-and discussed as a concrete example of a real precision limit in the
-write-up and slides.
+An earlier version verified the `x`-side assertions on the main example
+(`LS x p`, `(ODD x xx)(EVEN x xx)`, `(ODD x xx)(ODD x z)`) but *not* the
+structurally symmetric `y`-side ones (`LS y yy`, `t = yy.n`), even though
+both are true — the `x`/`y` asymmetry discussed in the write-up and
+slides. It is now fixed; all nine assertions on `1-given-example.txt`
+verify.
+
+Root cause: on the `y`-traversal, `succ[y]` briefly reads as `"NULL"`
+early in the fixpoint (before `y`'s list is built), so `t := yy.n` takes
+the "`y.n` is NULL" branch and writes `reach[y][t] = NO` into the merged
+state at the loop head. A later join with the real value
+(`reach[y][t] = shift(reach[y][yy])`) gives `TOP`, which monotone
+iteration never recovers, and `yy := t` feeds it back to pin
+`reach[y][yy] = TOP`. The `x`-side never hits this because `succ[x]` is
+always a known non-NULL slot, so `t := xx.n` never takes the NULL branch.
+
+Fix (`shape/analysis.py`): `do_assign_deref` now records the exact
+`y.n == x` relationship on *every* branch, so it is representation-
+identical on all paths and survives their CFG join instead of collapsing
+`succ[y]` to `None`; a small `_resolve_succ` helper lets the succ-consuming
+sites treat a successor that points at a proven-NULL slot identically to
+`"NULL"`. The latter also removes some false-positive sharing conflicts
+that had been suppressing precise list-building updates — which is why
+shape test 3's cycle is now reported as definite and test 4's
+`assert (LS y xx)` now verifies (both sound; see the per-test notes
+above). Shape tests 2 and 5 are unchanged.
 
 ## AI-assisted development disclosure
