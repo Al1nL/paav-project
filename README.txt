@@ -2,14 +2,16 @@
 
 Two static analyses, implemented in Python 3 (stdlib only):
 
-- `impl/parity/` — Parity analysis for integer programs (Section 1)
-- `impl/shape/`  — Shape analysis for acyclic/unshared linked lists (Section 2)
-- `impl/common/` — Shared CFG parser + generic worklist fixpoint engine
+- `parity/` — Relational parity analysis for integer programs (Section 1)
+- `shape/`  — Relational shape analysis for acyclic/unshared linked lists (Section 2)
+- `common/` — Shared CFG parser + generic worklist fixpoint engine
+- `tests/`  — Unit tests plus the property-based verification tools described below
 
-See `report.pdf` for the formal domains, transfer functions, and
-soundness/termination arguments. See `00-plan-and-decisions.md` for the
-design-decision log written before/during implementation (kept as-is,
-including a couple of "found via testing" corrections — see below).
+See `report.pdf` for the formal domains, transfer functions, and the
+soundness/termination arguments.
+
+Neither analysis uses widening: both domains have finite height for any
+fixed program, so plain worklist iteration terminates on its own.
 
 ## Requirements
 
@@ -17,7 +19,7 @@ Python 3.8+, no third-party packages.
 
 ## Running
 
-From the `impl/` directory:
+From the repository root:
 
 ```
 # Parity analysis: run on one or more test programs
@@ -31,12 +33,17 @@ python3 -m shape.analysis shape/interesting-tests/*.txt        # run all 5
 
 Each run prints, per `assert` edge in the program: `VERIFIED` (the
 analysis proved the assertion holds on every execution) or `POSSIBLY
-VIOLATED` (the analysis could not prove it — either because it's a real
-bug, or a real precision limit of the abstraction; test 3 in each suite is
-a deliberate example of the former, and the shape suite's known limitation
-below is an example of the latter). Shape analysis additionally reports
-`VIOLATION` lines for memory-safety / cycle / sharing problems, found by a
-post-hoc check against the converged fixpoint at each mutating command.
+VIOLATED` (the analysis could not prove it — either because the
+assertion is genuinely false on some path, or because of a real
+precision limit). Parity test 3 and shape test 4 each contain an
+assertion that is genuinely false and is correctly reported as
+`POSSIBLY VIOLATED`.
+
+Shape analysis additionally reports `VIOLATION` lines for memory-safety,
+cycle, and sharing problems, checked against the converged fixpoint at
+each mutating command. Thanks to the bounded disjunctive extension
+(report.pdf, "Loop-carried aliasing"), these are reported as *certain*
+violations rather than merely possible ones.
 
 ## Input format
 
@@ -48,18 +55,13 @@ Lsrc  <command>   Ldst
 Lsrc  <command>   Ldst
 ...
 ```
-One quirk found in the provided `example-list.txt`: the edge
-`L31 t := yy.n L32` is followed by two `assume` edges written as sourced
-from `L34` rather than `L32` — a typo, given the identical pattern is
-written correctly (`L21`/`L22`) for the `x`-loop just above it. Our copy in
-`shape/interesting-tests/1-given-example.txt` unifies both to `L32`.
 
 ## Test suites
 
 Each analysis has exactly 5 "interesting" test programs in its
-`interesting-tests/` directory (see the analysis-specific notes below).
+`interesting-tests/` directory.
 
-### Parity (`impl/parity/interesting-tests/`)
+### Parity (`parity/interesting-tests/`)
 1. `1-given-example.txt` — the project's own example; all asserts verify.
 2. `2-independent-tautology.txt` — unrelated variables; checks the
    assert-checker doesn't over- or under-claim on trivial tautologies.
@@ -67,39 +69,62 @@ Each analysis has exactly 5 "interesting" test programs in its
    (`EVEN i` unconditionally isn't actually always true here); shows the
    tool correctly reports "possibly violated" rather than a false
    "verified".
-4. `4-multihop-chain.txt` — a 3-variable renaming chain. This test is what
-   *exposed* the need to replace naive per-disjunct entailment checking
-   with exact coset enumeration (see `parity/analysis.py`'s
-   `check_assert` docstring) — an earlier, more naive implementation
-   wrongly reported this as unverifiable.
+4. `4-multihop-chain.txt` — a 3-variable renaming chain that exposed a
+   completeness gap in naive per-disjunct entailment checking (fixed by
+   exact coset enumeration; see `report.pdf` §2.4 / `parity/analysis.py`'s
+   `check_assert` docstring).
 5. `5-double-increment-nonrelational-ok.txt` — a case a plain
    *non-relational* parity domain would already get right; included as a
    contrast/control to show where the relational machinery is/isn't
    actually earning its keep.
 
-### Shape (`impl/shape/interesting-tests/`)
-1. `1-given-example.txt` — the project's own example (typo-fixed, see
-   above). See "Soundness fixes" below: 3 of 9 assertions now verify
-   (down from an earlier, unsound 7/9 — see that section for why), and 3
-   edges report `POSSIBLE SHARING`/`POSSIBLE CYCLE`.
+All five verify with no issues on the current code.
+
+### Shape (`shape/interesting-tests/`)
+1. `1-given-example.txt` — the project's own example. All 9 assertions
+   verify, with zero safety warnings.
 2. `2-sharing-violation.txt` — PDF "Additional examples" #1: correctly
-   reports a SHARING violation (now alongside the same baseline
-   `POSSIBLE SHARING`/`POSSIBLE CYCLE` warnings as file 1, inherited from
-   the shared prepend-loop prefix).
+   reports a *certain* `SHARING` violation; the assertions downstream of
+   the now-invalid write correctly drop to unverified.
 3. `3-cycle-violation.txt` — PDF "Additional examples" #2: correctly
-   reports a (possible) CYCLE violation (same baseline warnings as above).
-4. `4-merge-aliasing.txt` — PDF "Additional examples" #3: the added
-   `assert (LS y xx)` is correctly reported as unverifiable (same baseline
-   warnings, plus its own two extra edges).
+   reports a *certain* `CYCLE` violation.
+4. `4-merge-aliasing.txt` — PDF "Additional examples" #3: safety holds
+   and every assertion verifies except `t = yy.n`, which is genuinely
+   false here (`yy.n` has been reset to `x`, a non-null node, while `t`
+   is `NULL`) and is correctly reported as `POSSIBLY VIOLATED`. The added
+   `assert (LS y xx)` correctly **verifies**: `yy.n := x` splices `x`'s
+   list onto `y`'s tail, so `y` provably reaches `xx`.
 5. `5-null-deref-negative.txt` — our own negative test: a pointer that's
    only *sometimes* re-nulled before a dereference; correctly reported as
-   a MEMORY SAFETY violation.
+   a `MEMORY SAFETY` violation.
 
-## Soundness and Precision Notes
+## Verification tools (beyond the required test suites)
 
-- **Monotonicity & Conservative Refinement**: All transfer functions enforce strict monotonicity (`a <= b => transfer(a) <= transfer(b)`). Uncertain inputs fall back conservatively to unknown or `BOTTOM` on contradiction.
-- **Successor Tracking**: `x := y.n` uniformly records `succ[y] = x` across branches to preserve successor aliasing across iterations. `_resolve_succ` normalizes NULL-pointing successor variables.
-- **Monotonicity Testing**: A test tool at `tests/exhaustive_monotonicity_check.py` validates lattice monotonicity across random state weakenings.
+- `tests/` — `python -m unittest discover -s tests -v` runs the full unit
+  test suite (126 tests as of this revision).
+- `tests/monotonicity_check_parity.py` — exhaustive/randomized check that
+  every parity transfer function is monotone.
+- `tests/exhaustive_monotonicity_check.py` and
+  `tests/monotonicity_check_liveness_filter.py` — the same property for
+  shape's transfer functions, the latter specifically exercising the
+  liveness filter used by the sharing check.
+- `tests/differential_fuzz_shape.py` — ground-truth differential fuzzing:
+  runs random programs through both a concrete heap simulator and the
+  real abstract transfer functions, and checks every fact the abstract
+  state claims against the concrete execution.
+- `tests/loop_differential_check.py` — unrolls small loop programs
+  against ground truth for trip counts 0–6, to validate the bounded
+  disjunctive extension used for loop-carried precision.
 
-## AI-assisted development disclosure
+### Running the verification tools
 
+From the repository root:
+
+```
+python3 -m unittest discover -s tests -v            # 126 unit tests
+python3 -m tests.monotonicity_check_parity          # parity, ~500k pairs (seconds)
+python3 -m tests.exhaustive_monotonicity_check      # shape, ~1.5M pairs (several minutes)
+python3 -m tests.monotonicity_check_liveness_filter # shape sharing-check liveness filter
+python3 -m tests.differential_fuzz_shape            # shape, ground-truth (several minutes)
+python3 tests/loop_differential_check.py            # shape, loop/disjunctive
+```
