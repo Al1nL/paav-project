@@ -31,27 +31,7 @@ def eq_effective(s, x, y):
 
 
 def free_var_slot(s, x, aux):
-    """Before OVERWRITING variable x's identity (x:=y, x:=NULL, x:=new,
-    x:=y.n), move x's current row/col to the dedicated scratch slot `aux`
-    and redirect any dangling succ[w]==x references to aux too, then reset
-    x to a fresh/unconstrained slot.
-
-    Why this is needed (found via testing, not anticipated in the plan
-    doc): `t.n := x; x := t` records succ[t] = (index of x). If we then
-    overwrite x directly, succ[t] silently becomes self-referential
-    nonsense (t.n ends up "pointing at whatever x is now" instead of the
-    node x used to designate). This is the exact same aliasing hazard as
-    Parity's `i := i + 1`, but arising here indirectly through the succ
-    table across two separate commands rather than within one.
-
-    Each CFG edge that overwrites a variable is given its OWN dedicated
-    aux slot (computed once in analyze(), not round-robin/global), so the
-    transfer function stays a pure function of (edge, input state) as
-    required for a sound fixpoint iteration.
-
-    The eq loops below run over range(n + 1), not range(n): index n is
-    the reserved NULL coordinate (see domain.py), and x's/aux's nullity
-    is just one more cell of the same table now, not a separate one."""
+    """Save variable x's identity into scratch slot `aux` before x is overwritten."""
     if D.is_bottom(s):
         return D.BOTTOM
     n = s.n
@@ -76,10 +56,7 @@ def free_var_slot(s, x, aux):
         s = D.set_reach(s, z, aux, s.reach[z][x])
     s = D.set_reach(s, aux, aux, s.reach[x][x])
     s = D.set_succ(s, aux, s.succ[x])
-    s = D.set_claimed(s, aux, True)  # aux now holds a real (possibly-stale
-    # but real) identity -- see find_sharing_conflict's docstring for why
-    # this matters: an unclaimed slot is soundly skippable as a sharing/
-    # cycle candidate (nothing lives there yet), a claimed one is not.
+    s = D.set_claimed(s, aux, True)  # Mark scratch slot as claimed (active identity)
     for w in range(n):
         if w != x and w != aux and s.succ[w] == x:
             s = D.set_succ(s, w, aux)
@@ -99,26 +76,11 @@ def free_var_slot(s, x, aux):
 
 
 def copy_row(s, dst, src, aux=None):
-    """dst becomes an alias of src: copy nullity/eq/reach/succ from src to
-    dst (used by `x := y` and by `x := y.n` when y.n is a known variable).
-    `aux`: dedicated scratch slot for this edge (see free_var_slot); pass
-    None only when dst is known not to be dangling-referenced elsewhere."""
+    """Copy pointer identity from src to dst (`dst := src` or `dst := src.n`)."""
     if D.is_bottom(s):
         return D.BOTTOM
     if dst == src:
-        # dst doesn't actually change (it's already exactly src). But
-        # `aux` was still allocated for this edge and must not be left
-        # permanently unclaimed: FIX (found by differential/ground-
-        # truth fuzzing -- see report.pdf) -- an unclaimed aux slot can
-        # carry a stale fact from whenever its index was first marked
-        # distinct from something else (e.g. reset_as_fresh_new, which
-        # correctly marks EVERY coordinate including not-yet-relevant
-        # future aux slots -- see that function's docstring), and
-        # nothing ever corrects it if this shortcut skips claiming the
-        # slot entirely. Populate aux as an exact, permanent snapshot
-        # of dst's (unchanged) current identity -- like free_var_slot,
-        # but WITHOUT resetting dst afterward, since dst genuinely isn't
-        # being overwritten here.
+        # Populate aux as an exact snapshot of dst's unchanged identity to preserve its slot allocation.
         if aux is not None:
             n = s.n
             for z in range(n + 1):
@@ -129,10 +91,7 @@ def copy_row(s, dst, src, aux=None):
                 if z == dst or z == aux:
                     continue
                 s = D.set_eq(s, aux, z, D.get_eq(s, dst, z))
-            # Unlike free_var_slot (where dst is about to become
-            # something else, so its future relationship to aux is
-            # UNKNOWN), dst does NOT change here -- aux really is an
-            # exact, permanent alias of dst, so record that directly.
+            # aux is an exact alias of dst when dst is not overwritten
             s = D.set_eq(s, aux, dst, D.TRUE)
             for z in range(n):
                 if z == dst or z == aux:
@@ -149,8 +108,7 @@ def copy_row(s, dst, src, aux=None):
                 return s
         return s
     if aux is not None:
-        # This also redirects any succ[w] == dst (including w == src) to
-        # aux, so the copy below reads already-corrected values.
+        # Redirect dangling succ references of dst to aux before overwrite
         s = free_var_slot(s, dst, aux)
         if D.is_bottom(s):
             return s
@@ -203,8 +161,7 @@ def reset_as_null(s, x, aux=None):
 
 
 def reset_as_fresh_new(s, x, aux=None):
-    """x := new: fresh node, provably distinct from every other currently
-    tracked identity (see analysis rationale)."""
+    """x := new: initialize x as a fresh, distinct node."""
     if D.is_bottom(s):
         return D.BOTTOM
     if aux is not None:
@@ -219,22 +176,7 @@ def reset_as_fresh_new(s, x, aux=None):
     for z in range(n):
         if z == x:
             continue
-        # NOTE: this must mark EVERY z distinct, not just claimed ones
-        # -- claimed[z] == False ("provably not yet a real identity")
-        # is itself the MORE precise/informative value in this domain's
-        # own ordering (see domain.py's module docstring / the
-        # monotonicity check's v3 note: weakening claimed only ever
-        # flips False -> True), so behaving differently for claimed vs
-        # unclaimed z would make this function's output depend on that
-        # field in a non-monotone way -- confirmed directly by fuzzing
-        # an earlier version that special-cased unclaimed z here. The
-        # real hazard that version was working around (an unclaimed aux
-        # slot marked FALSE here, then never reclaimed/corrected later
-        # because copy_row's dst==src shortcut skipped free_var_slot
-        # entirely) is fixed at its actual source instead: copy_row now
-        # always properly claims and populates its aux slot, even in
-        # the dst==src case, so no slot is ever left both marked here
-        # AND permanently unclaimed.
+        # Mark coordinate x distinct from all other coordinates z
         s = D.set_eq(s, x, z, D.FALSE)
         s = D.set_reach(s, x, z, D.NO)
         s = D.set_reach(s, z, x, D.NO)
@@ -251,27 +193,7 @@ def check_memory_safety(s, ptr_idx):
 
 
 def _resolve_succ(s, w):
-    """s.succ[w], except a succ entry that points at a variable slot now
-    proven NULL is reported as the literal "NULL" -- both describe the same
-    heap fact ("w.n is the null value").
-
-    Two things create such entries:
-      * `t.n := x` recorded while x was still NULL (early in the fixpoint,
-        before x's list was built) -- a genuine pre-existing case;
-      * do_assign_deref now records `succ[y] = x` on *every* branch, including
-        the one where `y.n` turned out to be NULL (x is then a NULL slot), so
-        the exact `y.n == x` relationship is representation-identical on all
-        paths and survives their CFG join -- without this, a join of the
-        "y.n is NULL" path (succ[y] == "NULL") with a "y.n is a real node"
-        path collapsed succ[y] to None and drove reach[y][y.n] to TOP, which
-        is what left the y-traversal assertions (`LS y yy`, `t = yy.n`)
-        unprovable on the main example.
-
-    Consumers that branch on succ (sharing check, deref-atom evaluation,
-    assert consistency links) must treat these exactly like "NULL" rather
-    than as a live forward n-pointer; that is what this resolver is for.
-    `free_var_slot` already redirects such an entry to the scratch slot the
-    moment its target variable is reassigned, so it can never go stale."""
+    """Get successor of w, resolving variable indices that are NULL to "NULL"."""
     v = s.succ[w]
     if isinstance(v, int) and s.nullity[v] == D.NULL:
         return "NULL"
@@ -279,11 +201,7 @@ def _resolve_succ(s, w):
 
 
 def would_create_cycle(s, x, y):
-    """Would writing x.n := y close a cycle? True/False/'MAYBE' (unknown).
-    An UNKNOWN (not proven false) x==y is itself a "maybe": if x and y
-    turn out to be the same node, x.n := y is a self-loop, and silently
-    falling through to the reach check (which says nothing about x==y)
-    would wrongly report False instead of at least MAYBE."""
+    """Check if writing x.n := y would create a cycle (True, False, or 'MAYBE')."""
     ex = eq_effective(s, x, y)
     if ex == D.TRUE:
         return True
@@ -296,38 +214,7 @@ def would_create_cycle(s, x, y):
 
 
 def _compute_live(s, n_vars):
-    """The set of coordinates reachable from a NAMED program variable via
-    a chain of eq-aliasing. A coordinate outside this set (almost always
-    a `free_var_slot` scratch aux slot whose node has since become fully
-    disconnected from every live variable) cannot be dereferenced,
-    aliased, or otherwise observed by any future command in the program
-    -- nothing left in the program text can ever name it again. This is
-    the same "garbage is out of scope for the given assertion language"
-    argument already used to justify the NULL/unclaimed skips below.
-
-    IMPORTANT (found by exhaustive_monotonicity_check-style fuzzing on
-    this specific addition -- see report.pdf): growth here MUST use
-    `eq != FALSE` (TRUE *or* UNKNOWN both count as "possibly aliased,
-    cannot rule out"), never `eq == TRUE` alone. A state weakening from
-    eq[z][w]=TRUE to eq[z][w]=UNKNOWN carries LESS information, so the
-    live-set computed from it must never *shrink* relative to the
-    stronger state's -- but "== TRUE" does shrink it (TRUE triggers
-    growth, UNKNOWN doesn't), which broke monotonicity. "!= FALSE" is
-    stable under that exact weakening direction (both TRUE and UNKNOWN
-    trigger growth), so it doesn't.
-
-    A second, analogous idea -- also growing `live` by following succ
-    chains forward (z live and succ[z]=w known => w live) -- was tried
-    and DROPPED after the same fuzzing caught it as unsound for the same
-    reason: succ[z] going from a known index to None under weakening
-    loses that growth trigger with no compensating alternative (unlike
-    eq, there's no "possibly-succ" value to fall back to that stays
-    stable under weakening), so it cannot be made monotone-safe without
-    effectively disabling the filter whenever any live coordinate has an
-    unresolved successor -- which is the common case inside a loop, i.e.
-    exactly where the filter is supposed to help. Only the aliasing-based
-    (eq) growth survived fuzzing; this is a narrower, more conservative
-    filter than originally attempted, and is documented as such."""
+    """Compute the set of coordinates reachable from a named program variable via eq-aliasing."""
     n = s.n
     live = set(range(min(n_vars, n)))
     changed = True
@@ -342,45 +229,7 @@ def _compute_live(s, n_vars):
 
 
 def find_sharing_conflict(s, x, y, n_vars=None):
-    """Would writing x.n := y give node y a second incoming n-edge from a
-    node other than x's? Returns a definite conflicting var index,
-    "MAYBE" (cannot rule it out), or None (definitely no conflict).
-
-    An unresolved successor (sz is None, i.e. we don't know what z.n is)
-    must NOT be silently treated as "z.n definitely isn't y" -- that's
-    exactly the unsound shortcut that let real sharing go undetected:
-    z.n could well turn out to be y in the concrete run we just can't
-    prove it either way, so it downgrades this to "can't rule out"
-    rather than "no conflict". Likewise an unresolved eq(sz, y).
-
-    Three candidates are soundly skippable outright, though (found via
-    precision testing: without these, this function answered "can't rule
-    it out" almost everywhere, since a handful of genuinely-relevant
-    unknowns were swamped by dozens of irrelevant ones):
-      - z provably NULL: a NULL value denotes no node at all, so there is
-        no "z's n-field" to possibly conflict with anything.
-      - z not yet `claimed` (see State.claimed's docstring): an internal
-        scratch/aux slot that free_var_slot has never actually populated
-        doesn't stand in for any real heap identity in any execution
-        reaching this point -- there's nothing there to conflict either.
-      - z not LIVE (see _compute_live): a scratch aux slot that WAS
-        populated at some point but has since become unreachable from
-        every named program variable (no live variable is an alias of z,
-        and no live-reachable coordinate's succ points at z) cannot be
-        dereferenced or otherwise observed again by anything the program
-        can still name -- a real second in-edge dangling only from such
-        a slot can never be witnessed by any future command or assert,
-        so it is out of scope for the same reason garbage nodes are
-        (see report's note on the sharing check's scope). This is the
-        one addition beyond the original two skips above: those two
-        catch immediately-inert candidates, this one additionally catches
-        candidates that were relevant once but have since gone dead --
-        the dominant source of aux-slot noise inside loops, where each
-        loop iteration mints a fresh aux slot per reassignment.
-    None of the three loses real precision: all are cases where z
-    provably cannot be a second, distinct in-edge to any node THE
-    PROGRAM CAN STILL OBSERVE, not cases where we're merely optimistic
-    about a genuinely-relevant unknown."""
+    """Check if writing x.n := y introduces a sharing conflict (var index, 'MAYBE', or None)."""
     n = s.n
     live = _compute_live(s, n_vars) if n_vars is not None else set(range(n))
     maybe = False
@@ -432,33 +281,7 @@ def _propagate_succ_to_aliases(s, x, new_val):
 
 
 def do_field_assign(s, x, y, n_vars=None):
-    """Pure state transformer -- NEVER raises.
-
-    Memory safety: if x is PROVABLY null, every execution reaching this
-    edge crashes -- there is no live continuation, so the sound abstract
-    result is BOTTOM (not "unchanged": leaving s as-is would keep
-    propagating a dead, crashed path's facts as if they were live). If x
-    is merely UNPROVEN safe (nullity TOP), the only surviving (non-crash)
-    branch requires x to actually be NONNULL, so we narrow to that and
-    proceed with the write, rather than freezing the whole state -- that
-    narrowing is itself a sound refinement, not a guess.
-
-    A *predicted* cycle/sharing conflict must NOT stop us from modeling
-    the write itself. `x.n := y` always mutates the heap in the concrete
-    semantics -- the language has no runtime check that aborts on
-    creating a cycle or a shared node; those are just properties the
-    analysis is supposed to prove absent (and does, separately, via
-    check_field_assign_issues against the pre-state). If we returned `s`
-    unchanged instead, every fact this write should update (chiefly
-    succ[x], i.e. "what x.n now denotes") would go stale and keep
-    describing the *old* value of x.n forever afterwards -- unsound: it
-    lets later asserts about x.n "verify" against a value that's no
-    longer real. So succ[x] is always updated. However, once a cycle or
-    sharing conflict is real (or merely possible), the acyclic/unshared
-    invariant that `_apply_splice`'s exactness argument leans on is
-    broken, so its precise ODD/EVEN arithmetic is no longer trustworthy;
-    every reach fact touching x's node is instead soundly weakened to
-    TOP rather than kept at its old, now-unjustified, precise value."""
+    """State transformer for field assignment `x.n := y` (y=None for NULL)."""
     if D.is_bottom(s):
         return D.BOTTOM
     if s.nullity[x] == D.NULL:
@@ -474,32 +297,7 @@ def do_field_assign(s, x, y, n_vars=None):
         old_reach_row_x = [s.reach[x][w] for w in range(n)]  # snapshot before cutting
         s = D.set_succ(s, x, "NULL")
         s = _propagate_succ_to_aliases(s, x, "NULL")
-        # Only x's OWN outgoing chain is cut (reach[x][w], w != x): x's
-        # node still exists and is still reachable from wherever it was
-        # before (reach[z][x] unaffected), and x still trivially
-        # "reaches itself" as a bare 1-node segment (reach[x][x]
-        # unaffected -- nulling the outgoing field doesn't erase x's own
-        # node).
-        #
-        # FIX (found by differential/ground-truth fuzzing -- see
-        # report.pdf): "w != x" is not the same condition as "w is a
-        # genuinely different node from x". A w that is merely a
-        # DIFFERENT INDEX but a KNOWN ALIAS of x (eq[x][w] == TRUE) is
-        # every bit as reflexive as w == x itself -- cutting x's own
-        # outgoing field cannot un-reach x's own node no matter which
-        # name currently refers to it, so reach[x][w] must stay
-        # whatever the correct reflexive fact already is (left
-        # untouched here, exactly like reach[x][x]), not be forced to
-        # NO. When it's merely UNCERTAIN whether w aliases x
-        # (eq[x][w] == UNKNOWN), forcing NO is unsound for the same
-        # reason on the branch where it turns out to be an alias; the
-        # domain has no exact representation for "NO-or-reflexive-ODD",
-        # so TOP_REACH is the closest sound over-approximation.
-        # Confirmed: without this, `d.n := NULL` on a `d` that is a
-        # known alias of some other live variable `b` (e.g. after
-        # `b := d`) forced reach[d][b] to NO while reach[b][d] correctly
-        # stayed ODD -- eq[d][b] == TRUE with reach[d][b] != reach[b][d]
-        # is a direct internal contradiction, not just imprecision.
+        # Sever x's outgoing reachability, preserving reflexive facts for aliases of x.
         for w in range(n):
             if w == x:
                 continue
@@ -510,25 +308,7 @@ def do_field_assign(s, x, y, n_vars=None):
                 s = D.set_reach(s, x, w, D.NO)
             else:
                 s = D.set_reach(s, x, w, D.TOP_REACH)
-        # FIX (found by differential/ground-truth fuzzing -- see
-        # report.pdf): cutting x's outgoing edge must ALSO invalidate
-        # any OTHER variable z's reach to whatever was only reachable
-        # by continuing past x -- x's own row is not the only thing
-        # this write affects. Given the unshared-list invariant, a
-        # forward chain is unique: if z reaches x and w was reachable
-        # from x's (old) successor, z's only route to w necessarily
-        # passed through the edge just severed, so z can no longer
-        # reach w at all -- and this is CERTAIN (not just weakened),
-        # by the same "provably NO" argument _apply_splice already
-        # makes for the symmetric attach case, whenever z is certain to
-        # reach x in the first place. When that's merely possible
-        # (reach[z][x] == TOP_REACH), only join in the NO possibility
-        # rather than overwriting, since z might not reach x at all, in
-        # which case its route to w (if any) never depended on x.
-        # Without this, a stale "z reaches w" fact from before the cut
-        # survives indefinitely: confirmed by a case where `b.n := NULL`
-        # left `reach[d][a] == EVEN` (from the since-severed d -> b -> a
-        # chain) even though `d` provably no longer reaches `a` at all.
+        # Update reachability for variables z that previously reached nodes downstream of x.
         for z in range(n):
             if z == x:
                 continue
@@ -539,19 +319,7 @@ def do_field_assign(s, x, y, n_vars=None):
             for w in range(n):
                 if w == x or w == z:
                     continue
-                # Same aliasing gap as the fix just above, applied here
-                # too (found the same way): w being merely a different
-                # INDEX from x doesn't mean it's a different NODE. If w
-                # is a known alias of x (eq[x][w] == TRUE), it IS x, so
-                # it's not "downstream of x's old outgoing edge" at all
-                # -- it's the very node whose outgoing edge is being
-                # cut, and z's reach to it is exactly z's reach to x,
-                # unaffected. Confirmed by a case where a 12 that
-                # legitimately reached d (== an alias `10`, via
-                # eq[10][d]==TRUE) had reach[12][10] wrongly cut to NO,
-                # even though 12 continued to reach d/10 the entire
-                # time -- only d's OWN outgoing edge was cut, and this
-                # pair never went through it.
+                # Preserve reflexive reachability if w is an alias of x
                 eq_xw = D.get_eq(s, x, w)
                 if eq_xw == D.TRUE:
                     continue
@@ -560,20 +328,7 @@ def do_field_assign(s, x, y, n_vars=None):
                     continue  # w IS z; reach[z][w] is the trivial reflexive fact, unaffected
                 if old_reach_row_x[w] == D.NO:
                     continue  # x's old chain never reached w; genuinely nothing to cut
-                # FIX (found by monotonicity fuzzing, immediately after
-                # the fix just above -- see report.pdf): the same
-                # certain/uncertain distinction that fix already applies
-                # to eq_xw/eq_zw also has to apply to old_reach_row_x[w]
-                # itself. Only the `== NO` case above is certain enough
-                # to justify skipping outright; TOP_REACH here means
-                # "x's old chain MIGHT have reached w", not "did" -- so
-                # it must not license a confident NO any more than an
-                # uncertain eq does. Confirmed directly: weakening a
-                # state's reach[x][w] from a certain NO to TOP (strictly
-                # LESS information) flipped this function's output for
-                # reach[z][w] from an unchanged EVEN (correctly left
-                # alone, since x's old chain provably never reached w)
-                # to a confidently wrong NO.
+                # Only sever reachability if z's path to w definitely passed through x
                 old_certainly_reached = old_reach_row_x[w] != D.TOP_REACH
                 certain = (z_certainly_reaches_x and eq_xw == D.FALSE
                            and eq_zw == D.FALSE and old_certainly_reached)
@@ -594,32 +349,7 @@ def do_field_assign(s, x, y, n_vars=None):
     maybe_break = (cyc == "MAYBE") or (conflict == "MAYBE")
 
     if definite_break or maybe_break:
-        # The invariant _apply_splice relies on is broken by this write
-        # (for sure, or possibly -- see the note below on why "possibly"
-        # doesn't currently earn anything sharper): every reach fact
-        # touching x is no longer trustworthy.
-        #
-        # Tried and reverted: computing the precise splice AND the
-        # weakened result and joining them (the same "compute both
-        # possibilities" technique that works for y's nullity
-        # uncertainty just below). That technique only helps when the
-        # two branches disagree on something less than everything;
-        # here, _weaken_for_uncertain_write sets every cell it touches
-        # to TOP outright, and join(anything, TOP) is always TOP by
-        # construction -- so joining just silently reproduces this same
-        # branch, confirmed by direct testing (byte-identical output,
-        # traced end to end). The real remaining lever for recovering
-        # this precision is elsewhere: find_sharing_conflict currently
-        # answers "maybe" the moment ANY tracked variable anywhere has a
-        # completely unestablished successor, which in practice is true
-        # for nearly every untouched scratch slot simultaneously, not
-        # just ones plausibly relevant to this specific write. Narrowing
-        # that safely needs the state to distinguish "never going to be
-        # a live pointer here" from "currently unknown but could still
-        # alias" -- which it currently cannot (an untouched scratch slot
-        # and a touched-but-forgotten one are indistinguishable in the
-        # table) -- and is a real design change to the conflict-
-        # detection logic, not a local patch to this function.
+        # Weaken reachability if this write breaks acyclic/unshared invariants
         s = _weaken_for_uncertain_write(s, x, y, n)
     else:
         s = _apply_splice_best_effort(s, x, y)
@@ -629,33 +359,20 @@ def do_field_assign(s, x, y, n_vars=None):
 def _apply_splice_best_effort(s, x, y):
     """Apply the exact splice for x.n := y, additionally accounting for
     y's own nullity uncertainty (join both branches when y's nullity is
-    TOP -- see the docstring on the y-nullity handling this factors out
-    of) but NOT for cycle/sharing uncertainty; the caller handles that
+    TOP) but NOT for cycle/sharing uncertainty; the caller handles that
     dimension separately, since the two kinds of uncertainty are
     independent and each needs its own join."""
     if s.nullity[y] == D.NONNULL:
         return _apply_splice(s, x, y)
     if s.nullity[y] == D.TOP_NULLITY:
-        # y's nullity is itself ambiguous (e.g. loop-iteration-count
-        # uncertainty, not staleness -- see _apply_splice's docstring for
-        # the distinction). Compute both possibilities and join them:
-        # sound, and precise whenever both branches happen to agree.
+        # y's nullity is itself ambiguous. Compute both possibilities and join them
         spliced = _apply_splice(s, x, y)
         return _join_states_reach(s, spliced)
     return s  # y is NULL: nothing to splice
 
 
 def _weaken_for_uncertain_write(s, x, y, n):
-    """Give up on x's reach facts (and the downstream splice-affected
-    cells reach[z][w] for z reaching x and w reached from y) because this
-    write may -- or, when called from the definite-break case, definitely
-    does -- break the acyclic/unshared invariant _apply_splice's
-    exactness argument relies on. Must ALSO cover those downstream cells,
-    not just x's own row/column: the concrete write still happens, so a
-    genuine new path z -> x -> y -> w may now exist, and leaving
-    reach[z][w] at its stale pre-write value would silently understate
-    reachability (unsound: could make a real LS/ODD/EVEN fact falsely
-    read as NO)."""
+    """Weaken reachability table when a field write breaks acyclic/unshared invariants."""
     old_reach_col_x = [s.reach[z][x] for z in range(n)]
     old_reach_row_y = [s.reach[y][w] for w in range(n)]
     for z in range(n):
@@ -693,18 +410,6 @@ def _apply_splice(s, x, y):
             if ryw == D.NO:
                 continue
             combined = D.combine_seq(rzy_new, ryw)
-            # NOT a join with the old value: given the unshared-list
-            # invariant (enforced by the sharing check above) plus the
-            # "field was just reset to NULL" assumption, the old
-            # reach[z][w] for exactly these (z reaches x, w reached
-            # from y) pairs is PROVABLY NO -- z's forward chain was
-            # fixed and dead-ended at x (null), so w (only reachable
-            # via y's separate, unshared chain) couldn't have been
-            # reachable from z before. Joining with that stale NO
-            # would wrongly turn e.g. NO-join-EVEN into TOP; a direct
-            # overwrite is exact here. (Found via testing: an earlier
-            # join-based version silently destroyed precision through
-            # every loop in the given example.)
             new_reach[z][w] = combined
     return s.with_(reach=tuple(tuple(r) for r in new_reach))
 
@@ -733,21 +438,7 @@ def check_field_assign_issues(s, x, y, n_vars=None):
 
 
 def _combine_prefer_derived(copied, derived):
-    """Combine a value copied from an aliased slot with a value freshly
-    re-derived from an already-established precise fact. If compatible
-    (their outcome-sets overlap), intersect (sharper). If they genuinely
-    disagree, trust `derived`: it's grounded directly in a fact we've
-    already verified precise (e.g. reach[z][xx] right after xx was just
-    assigned), whereas the copied value can carry staleness inherited
-    from unrelated loop-iteration mixing elsewhere in the aliased slot's
-    own history. (Found via testing: using a plain intersection/"meet"
-    here silently fell back to NO on disagreement, destroying precision
-    the same way the field-write splice bug did.) If the two outcome-sets
-    are genuinely disjoint, that isn't "trust one side" territory either
-    -- both were derived soundly from the same real state, so a real
-    disagreement means the state itself is contradictory (unreachable).
-    Returns None in that case; the caller must treat it as BOTTOM rather
-    than picking either value."""
+    """Combine a copied reachability value with a freshly re-derived value."""
     inter = D._REACH_SETS[copied] & D._REACH_SETS[derived]
     if inter:
         return D._SET_TO_REACH[frozenset(inter)]
@@ -783,20 +474,7 @@ def do_assign_deref(s, x, y, aux=None):
     if succ_y is not None:
         return _do_assign_deref_known_succ(s, x, y, succ_y, aux)
 
-    # unknown successor: y.n could turn out to be a genuinely fresh node
-    # we've never named before, OR it could coincidentally already equal
-    # some OTHER already-tracked variable's current identity -- including
-    # (but not limited to) x's own. The "succ_y is already known" branch
-    # above handles that precisely via copy_row's aliasing whenever we
-    # DO know which variable it is; here we don't, so the sound answer
-    # joins the "fresh" treatment with the "as if we'd learned succ_y is
-    # w" result for every already-tracked real variable w. Committing
-    # only to "fresh" silently discards every one of those coincidence
-    # possibilities, each of which a sibling state that happens to
-    # retain the concrete (coincidentally-aliased) succ_y can legitimately
-    # reach via the branch above -- an asymmetry a fuzzer catches as a
-    # monotonicity violation (this generalizes an earlier, narrower fix
-    # that only special-cased "coincides with x").
+    # Unknown successor: join fresh node treatment with hypothetical coincidence candidates
     n = s.n
     old_reach_col_y = [s.reach[z][y] for z in range(n)]  # snapshot before any reset
     if aux is not None:
@@ -823,18 +501,7 @@ def do_assign_deref(s, x, y, aux=None):
     fresh = D.set_succ(fresh, y, x)
     result = D.close_eq(fresh)
     for w in range(n):
-        # FIX (found by differential/ground-truth fuzzing -- see
-        # report.pdf): when x == y (a self-dereference, `x := x.n`),
-        # the hypothesis w == x means "x.n already equals x itself" --
-        # a self-loop that would already be a cycle in the PRE-state,
-        # which cannot be true of a state reachable under this
-        # language's acyclic invariant. Exploring it anyway (as one of
-        # the joined hypotheses) let a spurious `succ[x] == x` fact
-        # survive into the result even though no reachable concrete
-        # state has one. This is specific to x == y: when x != y, w ==
-        # x is a perfectly ordinary, legitimate hypothesis (y.n
-        # happening to already equal x's current value) already handled
-        # correctly elsewhere (copy_row's dst == src case).
+        # Skip self-loop hypothesis when x == y (acyclic invariant)
         if x == y and w == x:
             continue
         candidate = _do_assign_deref_known_succ(s, x, y, w, aux)
@@ -843,19 +510,8 @@ def do_assign_deref(s, x, y, aux=None):
 
 
 def _do_assign_deref_known_succ(s, x, y, succ_y, aux):
-    """x := y.n, where y.n is definitely (or, from do_assign_deref's
-    "unknown successor" branch, hypothetically) the variable `succ_y`.
-    Factored out so that branch can invoke this once per hypothetical
-    possibility and join the results, exactly reusing the same precise
-    logic as the case where succ_y is genuinely known."""
-    # x becomes an alias of the already-known successor `succ_y`. In
-    # addition to copying succ_y's own facts, ALSO derive reach purely
-    # from y's own (already-established) reach column via the shift
-    # rule, and take the MEET (intersection) of both -- both are sound,
-    # and whichever is sharper wins. This matters in practice: a node
-    # discovered via one path (e.g. during list construction) can end
-    # up with a less-precise row than what's re-derivable at the
-    # point of use from the pointer we're dereferencing right now.
+    """Transformer for `x := y.n` when `y.n` is equal to `succ_y`."""
+    # Derive reachability via y's reach column and intersect with copied facts
     n = s.n
     old_reach_col_y = [s.reach[z][y] for z in range(n)]
     out = copy_row(s, x, succ_y, aux)
@@ -872,38 +528,23 @@ def _do_assign_deref_known_succ(s, x, y, succ_y, aux):
         # value, so leave those two reflexive cells untouched.
         if z == x or z == succ_y:
             continue
-        # FIX (found by differential/ground-truth fuzzing -- see
-        # report.pdf): when z does NOT reach y at all
-        # (old_reach_col_y[z] == NO), there is no "via y" path to shift
-        # in the first place -- shifting NO and combining it with
-        # copy_row's already-correct out.reach[z][x] treats "no route
-        # through y" as if it were an independent, equally-valid claim
-        # "z definitely does not reach x at all", which can directly
-        # (and wrongly) contradict a real route to x that z has through
-        # some entirely different, already-established path (e.g. z
-        # already reaches succ_y directly, and x was just aliased to
-        # succ_y by copy_row above). _apply_splice already gets this
-        # right with the exact same guard (`if rzx == NO: continue`);
-        # this branch needs it too, for the same reason.
+        # Skip shift if z does not reach y
         if old_reach_col_y[z] == D.NO:
             continue
-        # FIX (found by differential/ground-truth fuzzing -- see
-        # report.pdf): `succ_y` being a *known* alias does not mean it
-        # is *non-null* -- it can itself be an alias to a NULL-valued
-        # slot (e.g. a chain of free_var_slot redirects that eventually
-        # bottoms out at NULL), exactly as happened here. Shifting
-        # reach[z][y] by one hop asserts "z reaches x", which is only
-        # sound reasoning when x is confirmed to actually BE a node.
-        # When x's nullity isn't confirmed NONNULL, the true answer
+        # `succ_y` being a *known* alias does not mean it is *non-null*:
+        # it can itself be an alias to a NULL-valued slot (e.g. a chain
+        # of free_var_slot redirects that eventually bottoms out at NULL).
+        # Shifting reach[z][y] by one hop asserts "z reaches x", which
+        # is only sound reasoning when x is confirmed to actually BE a
+        # node. When x's nullity isn't confirmed NONNULL, the true answer
         # must also cover "x turns out NULL, so z does not reach it at
         # all" (NO) -- mirroring the "unknown successor" branch above,
         # which already gets this right via reach_join(shift(...), NO).
-        # Without this, z == y hits it hardest: reach[y][y] is always
-        # the trivial reflexive ODD, so its shift is unconditionally
-        # EVEN, directly contradicting a correctly-copied NO whenever
-        # x turns out NULL -- a false contradiction, not a real one,
-        # that made a perfectly reachable program point look like
-        # BOTTOM (unreachable).
+        # Without this, z == y hits it hardest: reach[y][y] is always the
+        # trivial reflexive ODD, so its shift is unconditionally EVEN,
+        # directly contradicting a correctly-copied NO whenever x turns out
+        # NULL -- a false contradiction, not a real one, that made a perfectly
+        # reachable program point look like BOTTOM (unreachable).
         shifted = D.reach_shift(old_reach_col_y[z])
         derived = shifted if out.nullity[x] == D.NONNULL else D.reach_join(shifted, D.NO)
         combined = _combine_prefer_derived(out.reach[z][x], derived)
@@ -914,23 +555,9 @@ def _do_assign_deref_known_succ(s, x, y, succ_y, aux):
     # too, matching the other two branches, so the exact `y.n == x` fact
     # is representation-identical on all paths and survives their join
     # (the assert checker reads it back through _resolve_succ).
-    #
-    # FIX (found by differential/ground-truth fuzzing -- see
-    # report.pdf): this is only correct when y != x. When x == y (a
-    # self-dereference, `x := x.n`), `out` already has slot y == x
-    # OVERWRITTEN by copy_row above to represent the NEW value (x's
-    # alias of succ_y) -- it no longer refers to the OLD y whose
-    # successor this fact is actually about. Recording succ[y] = x
-    # unconditionally then asserts "x.n == x", a self-loop that cannot
-    # exist in any reachable concrete state under this language's
-    # acyclic invariant, purely as an artifact of reusing the same slot
-    # for both the old and new meaning. When x == y there is no longer
-    # a live coordinate correctly denoting "the old y" to attach this
-    # fact to (its data was moved to `aux` by free_var_slot, which
-    # isn't a named, further-queried coordinate), so the fact is simply
-    # not recorded in that case -- everything else this function
-    # already derived (x's nullity/eq/reach, aliased from succ_y) is
-    # still correct and sufficient.
+    # this is only correct when y != x. When x == y (a self-dereference,
+    # `x := x.n`), `out` already has slot y == x OVERWRITTEN by copy_row
+    # above to represent the NEW value (x's old content).
     if y == x:
         return out
     return D.set_succ(out, y, x)

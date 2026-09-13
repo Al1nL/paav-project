@@ -130,16 +130,14 @@ def forget(s, var_idx: int):
 
 
 def rename_coord(s, old_idx: int, new_idx: int):
-    """Relabel coordinate old_idx -> new_idx (new_idx must currently be
-    unused/free in s). This is a lossless isomorphism -- unlike `forget`,
-    it does not erase any relation; it's the tool used to correctly
-    handle aliased/self-referential assignments like `i := i + 1` (see
-    assign_linear) without accidentally erasing relations to other
-    variables that "forget" alone would destroy."""
+    """Relabel coordinate old_idx -> new_idx (lossless isomorphism)."""
     if is_bottom(s):
         return BOTTOM
     old_bit = 1 << old_idx
     new_bit = 1 << new_idx
+
+    # Pin new_idx to 0 to clear its free generator before moving old_idx's relation.
+    s = meet_equation(s, new_bit, 0)
 
     def move(x):
         if x & old_bit:
@@ -156,11 +154,7 @@ def assign_linear(s, var_idx: int, other_idx, flip: bool, aux_idx: int = None):
     If other_idx is None, this is i := K (flip used as the K-parity bit).
 
     aux_idx: a scratch coordinate not used by any program variable, needed
-    to correctly handle the aliased case i==j (e.g. `i := i + 1`) -- see
-    rename_coord's docstring for why a naive forget-based approach is
-    unsound-by-omission here (it silently entails the WRONG thing: it
-    would make new-i's parity fully unconstrained instead of "old-i
-    flipped").
+    to correctly handle the aliased case  
     """
     if other_idx is None:
         s = forget(s, var_idx)

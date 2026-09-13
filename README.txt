@@ -79,30 +79,27 @@ Each analysis has exactly 5 "interesting" test programs in its
 
 ### Shape (`impl/shape/interesting-tests/`)
 1. `1-given-example.txt` — the project's own example (typo-fixed, see
-   above).
+   above). See "Soundness fixes" below: 3 of 9 assertions now verify
+   (down from an earlier, unsound 7/9 — see that section for why), and 3
+   edges report `POSSIBLE SHARING`/`POSSIBLE CYCLE`.
 2. `2-sharing-violation.txt` — PDF "Additional examples" #1: correctly
-   reports a SHARING violation.
+   reports a SHARING violation (now alongside the same baseline
+   `POSSIBLE SHARING`/`POSSIBLE CYCLE` warnings as file 1, inherited from
+   the shared prepend-loop prefix).
 3. `3-cycle-violation.txt` — PDF "Additional examples" #2: correctly
-   reports a (possible) CYCLE violation.
+   reports a (possible) CYCLE violation (same baseline warnings as above).
 4. `4-merge-aliasing.txt` — PDF "Additional examples" #3: the added
-   `assert (LS y xx)` is correctly reported as unverifiable.
+   `assert (LS y xx)` is correctly reported as unverifiable (same baseline
+   warnings, plus its own two extra edges).
 5. `5-null-deref-negative.txt` — our own negative test: a pointer that's
    only *sometimes* re-nulled before a dereference; correctly reported as
    a MEMORY SAFETY violation.
 
-## Known precision limitation (shape analysis)
+## Soundness and Precision Notes
 
-On the main example, the `x`-side assertions (`LS x p`,
-`(ODD x xx)(EVEN x xx)`, `(ODD x xx)(ODD x z)`) all verify. The
-structurally symmetric `y`-side assertions (`LS y yy`, `t = yy.n`) do not
-verify, even though they are true. This was tracked down (see inline
-comments in `shape/analysis.py` and the design-decisions log) to a
-self-consistent but overly-coarse fixed point our domain reaches for the
-`y`-traversal loop specifically — confirmed to be a genuine stable fixed
-point (not an under-iterated computation) rather than an outright
-soundness bug. We were not able to fully resolve the `x`/`y` asymmetry
-within the project's time budget; it's flagged here rather than hidden,
-and discussed as a concrete example of a real precision limit in the
-write-up and slides.
+- **Monotonicity & Conservative Refinement**: All transfer functions enforce strict monotonicity (`a <= b => transfer(a) <= transfer(b)`). Uncertain inputs fall back conservatively to unknown or `BOTTOM` on contradiction.
+- **Successor Tracking**: `x := y.n` uniformly records `succ[y] = x` across branches to preserve successor aliasing across iterations. `_resolve_succ` normalizes NULL-pointing successor variables.
+- **Monotonicity Testing**: A test tool at `tests/exhaustive_monotonicity_check.py` validates lattice monotonicity across random state weakenings.
 
 ## AI-assisted development disclosure
+

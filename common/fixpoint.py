@@ -18,6 +18,8 @@ from collections import deque
 
 
 def run_fixpoint(cfg, bottom, entry_state, transfer, join, leq):
+    """Run worklist chaotic iteration over cfg until fixpoint convergence.
+    Returns (pre_states, post_per_edge, iterations)."""
     pre = {n: bottom() for n in cfg.nodes}
     pre[cfg.entry] = entry_state
 

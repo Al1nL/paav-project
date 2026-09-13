@@ -1,40 +1,11 @@
 """
-Custom lightweight relational shape domain for acyclic/unshared singly
-linked lists (see plan doc section 2 for the full design rationale).
+Relational shape domain for acyclic/unshared singly-linked lists.
 
-State is BOTTOM, or a tuple of tables. The variable-index space has n
-"ordinary" coordinates (0..n-1: named program variables + scratch aux
-slots), PLUS one extra reserved coordinate, index n itself, which stands
-for the literal NULL value (see NULL_IDX below). eq/reach/succ are all
-generalized to (n+1) x (n+1) *except* succ/reach conceptually don't need a
-NULL row (NULL has no n-field and reaches nothing), but for uniformity the
-tables are still sized against total dimension n+1; the NULL row of
-succ/reach is simply never written or consulted.
-
-  eq[x][y]    in {TRUE, FALSE, UNKNOWN}   (symmetric; eq[x][x] = TRUE)
-              -- x == n (NULL_IDX) folded in as an ordinary coordinate:
-              eq[x][NULL_IDX] IS "x's nullity" (TRUE=NULL, FALSE=NONNULL,
-              UNKNOWN=TOP). There is deliberately no separate nullity
-              table: nullity used to be stored redundantly alongside eq
-              and reconciled only when READ (via a since-removed
-              eq_effective helper), which is exactly what let the two
-              views drift out of sync across a transformer and broke the
-              monotonicity the fixpoint's soundness argument depends on
-              (see report_v1's Section on the known limitation, and
-              report_v2 for this fix). Folding NULL into eq as one more
-              tracked identity removes the redundancy outright: there is
-              only one fact, stored once.
-  succ[x]     in {var-index, 'NULL', None}   (None = unknown; EXACT when known)
-  reach[x][y] subset of {NO, ODD, EVEN}, represented by one of:
-              NO, ODD, EVEN, EITHER({ODD,EVEN}), TOP({NO,ODD,EVEN})
-              -- directed: "does/would a list segment go x -> y, and parity"
-
-Plus two global sticky flags carried alongside the state during analysis
-(reported, not part of the join lattice per se -- see analysis.py):
-  a memory-safety violation, a cycle violation, a sharing violation.
-These are detected AT the mutating command (assign_deref / field_assign)
-by analysis.py using the tables below; the domain module only provides the
-table primitives.
+State is BOTTOM or a tuple of tables:
+  - eq[x][y]: identity relation in {TRUE, FALSE, UNKNOWN}. Index n (NULL_IDX) represents NULL.
+  - succ[x]: target variable index, 'NULL', or None (unknown).
+  - reach[x][y]: reachability and parity in {NO, ODD, EVEN, EITHER, TOP}.
+  - claimed[x]: boolean flag indicating if slot x corresponds to a live identity.
 """
 
 from dataclasses import dataclass
@@ -95,20 +66,7 @@ def combine_seq(a, b):
 
 
 def reach_meet(a, b):
-    """Intersection of outcome-sets; sound refinement used by assume(x=y).
-    Returns None on a genuine contradiction (disjoint outcome-sets) --
-    e.g. one side claims a node trivially reaches itself (ODD) while the
-    other claims it definitely doesn't (NO): if x and y are truly the
-    same node, both facts must hold simultaneously, and there is no
-    concrete store where an ODD-length self-segment and no self-segment
-    at all are both true. Silently falling back to NO here (an earlier
-    version of this function did) is unsound: NO is not a valid
-    over-approximation of an empty set of possibilities, and letting a
-    caller treat "contradiction" as if it were "provably NO" is exactly
-    the kind of undetected-impossible-state bug that broke monotonicity
-    elsewhere in this module (see _combine_prefer_derived, which had and
-    was fixed for the identical issue). The caller must treat None as
-    BOTTOM instead of writing it into the state."""
+    """Intersection of outcome-sets. Returns None on a contradiction."""
     inter = _REACH_SETS[a] & _REACH_SETS[b]
     if not inter:
         return None
@@ -162,40 +120,8 @@ def top(n: int) -> State:
 
 
 def initial_state(n: int, n_real: int = None) -> State:
-    """The analysis's actual entry state: per the language spec (2.1,
-    simplifying assumption 2), ALL pointer variables -- including ones the
-    program hasn't explicitly assigned yet -- start out equal to NULL, not
-    merely 'unconstrained'. Getting this wrong caused a real bug during
-    development: a `new`-node's "I'm fresh, distinct from everything"
-    fact was derived relative to variables that were technically still
-    TOP/unconstrained (not yet used in the program text), and that stale
-    NO-reachability fact then propagated onto them once they were finally
-    assigned later, incorrectly suppressing real reachability facts. Since
-    every never-yet-assigned variable is actually NULL (not merely
-    unknown) from the start, that fact was simply true the whole time and
-    gets correctly superseded once the variable is genuinely assigned.
-
-    `n_real` (defaults to n): only the first n_real coordinates are real,
-    NULL-per-the-language-assumption program variables; any remaining
-    coordinates up to n are internal scratch/aux slots (one per CFG edge
-    that can overwrite a variable's identity -- see analysis.py's
-    free_var_slot) and are NOT subject to that assumption -- they don't
-    represent anything until first claimed by free_var_slot, so they
-    start fully unconstrained (like top()), not NULL. Treating them as
-    NULL like real variables was harmless under the old design (nothing
-    ever checked for a contradiction on overwrite) but would spuriously
-    look like a contradiction the first time such a slot is claimed, now
-    that set_eq below actively detects contradictions.
-
-    `claimed[i]`: True for real variables from the start (they are live,
-    meaningful program variables from time zero, even while their value
-    is NULL); False for aux slots until analysis.py's free_var_slot first
-    populates one. This is what lets find_sharing_conflict/
-    would_create_cycle soundly skip a candidate variable that provably
-    isn't standing in for any real heap identity yet, instead of treating
-    every one of the many still-untouched scratch slots as a plausible
-    (if unknown) alias -- see find_sharing_conflict's docstring for why
-    that mattered for precision."""
+    """Entry state: all pointer variables start equal to NULL.
+    aux slots start unclaimed and unconstrained."""
     if n_real is None:
         n_real = n
     m = n + 1
@@ -261,19 +187,7 @@ def set_nullity(s, x, val):
 
 
 def set_eq(s, x, y, val):
-    """Overwrite eq[x][y] (and its symmetric mirror), unconditionally.
-    This intentionally does NOT check for contradiction against the old
-    value: set_eq/set_nullity double as both a REFINEMENT operation
-    (narrowing an unknown fact -- always safe) and a REASSIGNMENT
-    operation (a variable's identity changing because the program
-    genuinely reassigned it, e.g. reset_as_null/reset_as_fresh_new/
-    free_var_slot -- where overwriting a stale old fact is exactly the
-    point, not a contradiction to reject). Callers for which overwriting
-    really would be a logical contradiction (specifically assume_eq,
-    which represents a sound NARROWING and must reject narrowing to
-    something already known false) are responsible for checking the old
-    value themselves before calling this -- see make_transfer's
-    assume_eq handling."""
+    """Set eq[x][y] and eq[y][x] to val."""
     if is_bottom(s):
         return s
     e = _set2(s.eq, x, y, val)
@@ -305,37 +219,8 @@ def set_claimed(s, x, val=True):
 
 
 def close_eq(s):
-    """Close a state's eq table (which now also carries nullity, via the
-    reserved NULL_IDX coordinate -- see module docstring) under the two
-    inference rules that make "equals" behave like a genuine equivalence
-    relation with substitution, over ALL tracked coordinates (not just the
-    NULL one): for any x, y, z,
-        eq[x][y]=TRUE and eq[y][z]=TRUE  => eq[x][z]=TRUE   (transitivity)
-        eq[x][y]=TRUE and eq[y][z]=FALSE => eq[x][z]=FALSE  (substitution)
-    iterated to a fixpoint (bounded: only ever adds information, table is
-    finite, so this always terminates). If the same cell is ever forced to
-    both TRUE and FALSE, the table describes a contradiction -- no
-    concrete store fits -- and the whole state collapses to BOTTOM.
-
-    This subsumes and replaces the narrower, NULL-specific patch attempted
-    in an earlier revision (report_v1's "known limitation" section), which
-    only propagated consistency between eq and a separately-stored
-    nullity table and, being incomplete relative to full closure, itself
-    introduced new monotonicity violations. Full closure is what a proper
-    equality theory requires; a partial approximation of it does not
-    inherit its soundness/monotonicity guarantees for free.
-
-    Called once, at the true exit point of every function that returns a
-    "finished" state (do_field_assign, do_assign_deref, copy_row,
-    free_var_slot, reset_as_null, reset_as_fresh_new, join, and each
-    assume_* transfer) -- NOT after every individual low-level set_eq call,
-    both because that would be far more work than necessary (closure is
-    idempotent: closing an already-closed table plus one new fact is what
-    matters, not closing after every single cell write) and because
-    "forgetting" a variable's identity (resetting a whole row/column to
-    UNKNOWN, e.g. in free_var_slot) is a valid intermediate step that must
-    NOT be immediately re-closed against stale neighbouring facts before
-    the rest of that same reset has finished."""
+    """Compute equivalence closure over eq table via transitivity and substitution.
+    Returns BOTTOM if a contradiction (both TRUE and FALSE for same cell) occurs."""
     if is_bottom(s):
         return s
     m = s.n + 1
@@ -373,17 +258,7 @@ def close_eq(s):
 
 
 def _succ_alias_eq(eq_table, a_succ, b_succ):
-    """Do two succ values denote the same fact, given a table that already
-    knows which indices are aliases of each other? Exact match is the
-    common case; two different indices also count if the table says
-    they're the same node (TRUE, not just possibly/UNKNOWN). The literal
-    "NULL" marker and a variable index whose nullity is provably NULL
-    (eq[idx][NULL_IDX] == TRUE) are likewise just two spellings of the
-    same fact -- both mean "this field is null" -- and must be recognized
-    as such for the identical reason the rest of this alias-awareness
-    exists: two states that reached the same real conclusion through
-    different (but equally valid) representations must not look like
-    they disagree (fuzzer-caught)."""
+    """Check if two succ values represent the same target accounting for eq-aliasing and NULL."""
     if a_succ == b_succ:
         return True
     if isinstance(a_succ, int) and isinstance(b_succ, int):
@@ -478,11 +353,18 @@ def leq(a, b) -> bool:
     return True
 
 class DisjunctiveShapeState:
+    """Disjunctive set of abstract shape states (bounded powerset domain).
+
+    Attributes:
+        states: List of distinct State objects representing alternative execution paths.
+        max_disjuncts: Maximum allowed number of disjuncts before merging via join().
+    """
     def __init__(self, states=None, max_disjuncts=4):
         self.states = states if states is not None else []
         self.max_disjuncts = max_disjuncts
 
     def join(self, other):
+        """Combine two disjunctive states by taking the union of their state lists."""
         combined = list(self.states)
         for s in other.states:
             if s not in combined:
@@ -493,14 +375,14 @@ class DisjunctiveShapeState:
         return result
 
     def _reduce(self):
-        # Use the standalone join() function defined in domain.py
+        """Merge disjunct pairs using domain join() until count <= max_disjuncts."""
         while len(self.states) > self.max_disjuncts:
             s1 = self.states.pop(0)
             s2 = self.states.pop(0)
             self.states.append(join(s1, s2)) 
 
     def __le__(self, other):
-        # Use the standalone leq() function defined in domain.py
+        """Lattice partial order comparison: self <= other iff every state in self is <= some state in other."""
         for s1 in self.states:
             if not any(leq(s1, s2) for s2 in other.states):
                 return False

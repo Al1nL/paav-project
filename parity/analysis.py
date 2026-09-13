@@ -27,9 +27,7 @@ def make_transfer(var_index, aux_idx):
             _, i, j = cmd
             return D.assign_linear(s, var_index[i], var_index[j], flip=True, aux_idx=aux_idx)
         if kind == "assign_decr":
-            # i := j-1 : NOT simply "flip parity" (0-1 = 0 due to natural-number
-            # truncation at j=0). Sound conservative choice: forget i entirely
-            # (documented design decision, see report.pdf / plan doc section 1.3).
+            # i := j-1: forget i conservatively.
             _, i, j = cmd
             return D.forget(s, var_index[i])
         if kind == "assign_const":
@@ -62,25 +60,8 @@ def make_transfer(var_index, aux_idx):
 
 
 def check_assert(state, orc, var_index):
-    """orc: list of conjuncts, each a list of ('EVEN'|'ODD', var).
-    Returns True iff the assert is guaranteed to hold for every concrete
-    state represented by `state` (disjunction of conjunctions semantics).
-
-    NOTE on precision (see plan doc + report): checking each disjunct's
-    conjunction for entailment separately is SOUND but INCOMPLETE.
-    Example: if the state guarantees parity(i)=parity(k) but that shared
-    parity is otherwise unconstrained, then
-        (EVEN i EVEN k) OR (ODD i ODD k)
-    is a tautology over the state, yet *neither* disjunct is individually
-    entailed. To be exact (relative to this abstraction), we instead
-    enumerate the state's solution set directly: a `State` is a coset of a
-    GF(2) subspace of rank k = len(basis), i.e. exactly 2**k concrete
-    parity-vectors. k is always tiny here (bounded by #variables still
-    free after all constraints), so brute-force enumeration of the coset
-    and direct evaluation of the ORC formula on each point is cheap and
-    exactly correct (sound AND complete w.r.t. what the domain tracks) --
-    no case-by-case reasoning about complementary disjuncts needed.
-    """
+    """Check if the ORC formula holds for all concrete points in state.
+    Enumerates the GF(2) affine coset (2**k points) to evaluate exact disjunctive truth."""
     if D.is_bottom(state):
         return True  # unreachable program point: vacuously safe
 

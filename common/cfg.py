@@ -44,6 +44,7 @@ class CFG:
 
 
 def parse_cfg(text: str, parse_command: Callable[[str], Any]) -> CFG:
+    """Parse program text into a CFG instance, using parse_command to parse edge commands."""
     lines = [l.rstrip("\n") for l in text.splitlines()]
     # first non-blank line = variable declarations
     lines_iter = iter(lines)
@@ -99,13 +100,7 @@ def parse_cfg(text: str, parse_command: Callable[[str], Any]) -> CFG:
         cfg.out_edges[e.src].append(e)
         cfg.in_edges[e.dst].append(e)
 
-    # Entry node: per the simplifying assumptions this should be the unique
-    # node with no incoming edges. In practice one of the given example
-    # programs (the shape-analysis example) loops back to its own starting
-    # node (L6 -> L8), so that node does have an incoming edge. We fall back
-    # to "the source of the first edge in the file" when there isn't a
-    # unique no-incoming-edges node, which matches the intended reading
-    # order for every test program in this project.
+    # Entry node: unique node without incoming edges, or fallback to the source of the first edge.
     roots = [n for n in node_set if len(cfg.in_edges[n]) == 0]
     if len(roots) == 1:
         cfg.entry = roots[0]
