@@ -51,11 +51,9 @@ def reach_shift(a):
 
 
 def combine_seq(a, b):
-    """Splice two path facts sharing an endpoint (z->mid, mid->w) into a
-    fact for z->w. NO takes priority (broken path); else TOP if either
-    side unknown; else EITHER if either side ambiguous; else definite
-    ODD/EVEN by parity arithmetic (same-parity halves -> ODD overall,
-    since the shared midpoint is counted once, see plan doc 2.3)."""
+    """Splice two paths (z->mid and mid->w) into z->w.
+    NO dominates; TOP dominates the rest; EITHER dominates ODD/EVEN.
+    Same-parity halves yield ODD since the midpoint is counted once."""
     if a == NO or b == NO:
         return NO
     if a == TOP_REACH or b == TOP_REACH:
@@ -89,9 +87,8 @@ class State:
 
     @property
     def nullity(self):
-        """Derived, not stored: nullity[x] is exactly eq[x][NULL_IDX],
-        recomputed on every access so it is definitionally impossible for
-        it to disagree with eq (there is nothing else it could read)."""
+        """Derived: nullity[x] is exactly eq[x][NULL_IDX].
+        Recomputed on access to guarantee consistency with the eq table."""
         null_idx = self.n
         return tuple(_NULLITY_OF_EQ[self.eq[x][null_idx]] for x in range(self.n))
 
@@ -104,9 +101,8 @@ def null_idx(s) -> int:
 
 
 def top(n: int) -> State:
-    """The lattice TOP element: everything unconstrained. Used as the
-    generic 'no information' value, e.g. inside domain-internal resets --
-    NOT as the analysis's initial state (see initial_state below)."""
+    """The lattice TOP element (all facts unconstrained).
+    Used for generic resets, not as the program entry state."""
     m = n + 1
     eq = tuple(
         tuple(TRUE if i == j else UNKNOWN for j in range(m)) for i in range(m)
@@ -230,16 +226,8 @@ def close_eq(s):
         changed = False
         for x in range(m):
             for y in range(m):
-                # Only an EQUALITY hub (eq[x][y] = TRUE, i.e. x and y are
-                # the same value) licenses propagation: whatever holds of
-                # (y, z) then holds of (x, z) too, for either polarity.
-                # eq[x][y] = FALSE (x != y) licenses nothing about z on
-                # its own -- "x != y and y != z" does NOT imply x = z or
-                # x != z in general (this domain has more than two
-                # possible values); an earlier version of this closure
-                # wrongly treated FALSE as a hub too and derived TRUE from
-                # two unrelated disequalities, which produced spurious
-                # BOTTOMs having nothing to do with a real contradiction.
+                # Only TRUE (equality) allows transitive propagation.
+                # FALSE (disequality) licenses nothing about a third node z.
                 if x == y or eq[x][y] != TRUE:
                     continue
                 for z in range(m):
@@ -285,18 +273,13 @@ def join(a, b) -> State:
         )
         for i in range(m)
     )
-    # Close eq BEFORE deciding how succ merges: two succ values that look
-    # different by raw index (a.succ[i]=3, b.succ[i]=5) must still be kept,
-    # not dropped to "unknown", if the (closed) eq table already knows 3
-    # and 5 are the same node -- otherwise a state that merely names the
-    # same fact through a different index looks like it disagrees with
-    # itself, which breaks monotonicity the same way the old separate
-    # nullity table did (see report_v2's known-limitation writeup: this is
-    # that exact gap, now closed the same way).
+    # Close eq BEFORE merging succ. If a.succ=3 and b.succ=5, they might
+    # actually represent the same aliased node in the joined eq table.
+    # Closing eq first ensures we don't drop aliases to "unknown" prematurely.
     closed_eq_state = close_eq(State(
         n=n, eq=eq, succ=tuple(None for _ in range(n)),
         reach=tuple(tuple(NO for _ in range(n)) for _ in range(n)),
-        claimed=tuple(True for _ in range(n)),  # placeholder; unused by close_eq
+        claimed=tuple(True for _ in range(n)),  # placeholder
     ))
     if is_bottom(closed_eq_state):
         return BOTTOM
@@ -309,15 +292,8 @@ def join(a, b) -> State:
         tuple(reach_join(a.reach[i][j], b.reach[i][j]) for j in range(n))
         for i in range(n)
     )
-    # claimed is a simple two-point lattice: False ("provably not yet a
-    # real identity") is the precise/informative value, True (the
-    # default/unknown-but-safe-to-check assumption) is its top. A branch
-    # that has claimed[i] while its sibling hasn't means we can no longer
-    # be SURE i is unclaimed in every represented execution, so the join
-    # must keep it claimed (OR, not AND) -- the same direction as every
-    # other "weaken on disagreement" rule in this function, just phrased
-    # for a flag whose "more information" value happens to be False
-    # instead of True.
+    # For claimed, False (provably not an identity) is precise, True is top.
+    # If branches disagree, we weaken to True (OR) to stay sound.
     claimed = tuple(a.claimed[i] or b.claimed[i] for i in range(n))
     return State(n=n, eq=eq, succ=succ, reach=reach, claimed=claimed)
 
@@ -337,17 +313,12 @@ def leq(a, b) -> bool:
         for j in range(n):
             if not reach_leq(a.reach[i][j], b.reach[i][j]):
                 return False
-        # b.succ[i] might be phrased through a different (but, according
-        # to a's own more-informed eq table, already-known-aliased) index
-        # than a.succ[i] -- that's not a disagreement, just two names for
-        # the same fact. Only a genuine mismatch (not explained by a's own
-        # aliasing knowledge) violates a <= b.
+        # b.succ[i] might use a different alias index than a.succ[i].
+        # Use a's eq table to verify if they point to the same known node.
         if b.succ[i] is not None and not _succ_alias_eq(a.eq, a.succ[i], b.succ[i]):
             return False
-        # claimed: b confidently saying "not yet a real identity" (False)
-        # is the strong/precise claim (see join's comment); a, being at
-        # least as precise, must agree if b makes that claim. If b's
-        # claimed[i] is True (the default), a's value is unconstrained.
+        # If b precisely claims False (not a real identity), a must agree.
+        # If b is True (top), a can be anything.
         if not b.claimed[i] and a.claimed[i]:
             return False
     return True

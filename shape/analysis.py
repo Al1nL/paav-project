@@ -35,11 +35,8 @@ def free_var_slot(s, x, aux):
     if D.is_bottom(s):
         return D.BOTTOM
     n = s.n
-    # aux is reused across fixpoint iterations of the SAME edge, so it may
-    # still carry a stale definite fact from a previous iteration; clear it
-    # to UNKNOWN before copying x's CURRENT identity in, or that stale
-    # leftover could spuriously look like a contradiction against the new
-    # (possibly different) value being copied in.
+    # Clear aux to UNKNOWN first: it may carry stale facts from a prior
+    # fixpoint iteration that would falsely contradict x's current identity.
     for z in range(n + 1):
         if z == x or z == aux:
             continue
@@ -56,11 +53,11 @@ def free_var_slot(s, x, aux):
         s = D.set_reach(s, z, aux, s.reach[z][x])
     s = D.set_reach(s, aux, aux, s.reach[x][x])
     s = D.set_succ(s, aux, s.succ[x])
-    s = D.set_claimed(s, aux, True)  # Mark scratch slot as claimed (active identity)
+    s = D.set_claimed(s, aux, True)  # Mark scratch slot as claimed
     for w in range(n):
         if w != x and w != aux and s.succ[w] == x:
             s = D.set_succ(s, w, aux)
-    # free slot x: fresh/unconstrained, ready for the caller's new value
+    # free slot x: fresh, ready for the new value
     for z in range(n + 1):
         if z == x:
             continue
@@ -113,11 +110,11 @@ def copy_row(s, dst, src, aux=None):
         if D.is_bottom(s):
             return s
     n = s.n
-    for z in range(n + 1):  # defensively clear dst first (see free_var_slot)
+    for z in range(n + 1):  # Reset dst eq to UNKNOWN before overwriting with src's values
         if z == dst:
             continue
         s = D.set_eq(s, dst, z, D.UNKNOWN)
-    for z in range(n + 1):  # + NULL coordinate: copies src's nullity too
+    for z in range(n + 1):  # Copy src's nullity and other eq facts
         if z == dst:
             continue
         s = D.set_eq(s, dst, z, D.get_eq(s, src, z))
@@ -154,9 +151,7 @@ def reset_as_null(s, x, aux=None):
         s = D.set_reach(s, z, x, D.NO)
     s = D.set_reach(s, x, x, D.NO)
     # close_eq re-derives "x equals every other NULL var" (and "x differs
-    # from every other NONNULL var") automatically from the single fact
-    # eq[x][NULL] = TRUE just established -- no need to loop over every
-    # other variable's nullity by hand.
+    # from every other NONNULL var") from the fact that eq[x][NULL] = TRUE
     return D.close_eq(s)
 
 
@@ -254,20 +249,10 @@ def find_sharing_conflict(s, x, y, n_vars=None):
 
 
 def _propagate_succ_to_aliases(s, x, new_val):
-    """After x's node's n-field is set to `new_val`, every OTHER variable
-    w that denotes the *same* node also has w.n == new_val now. If w is a
-    PROVEN alias of x (eq_effective TRUE), set succ[w] := new_val
-    directly. If it's merely POSSIBLE that w aliases x (eq_effective
-    UNKNOWN), we can't soundly assert succ[w] := new_val outright --
-    that's only true on the "w is x" branch, and simply leaving succ[w]
-    untouched implicitly assumes the opposite ("w isn't x") branch
-    instead, which is just as unsound the other way. The sound answer is
-    the join of both branches: new_val if that already happens to match
-    w's old succ (both branches agree), else "unknown" (None). Skipping
-    this and leaving a stale concrete succ[w] behind on the UNKNOWN case
-    breaks monotonicity: a state that has since forgotten whether w
-    aliases x must not produce a MORE certain-looking result than one
-    that still remembers it does (caught by exhaustive fuzzing)."""
+    """Propagate x's new succ to aliases of x. Proven aliases (eq TRUE)
+    get new_val directly. Possible aliases (eq UNKNOWN) get the join:
+    keep new_val if it matches their old succ, else widen to None.
+    Leaving a stale concrete succ on the UNKNOWN case breaks monotonicity."""
     n = s.n
     for w in range(n):
         if w == x:
@@ -359,9 +344,7 @@ def do_field_assign(s, x, y, n_vars=None):
 def _apply_splice_best_effort(s, x, y):
     """Apply the exact splice for x.n := y, additionally accounting for
     y's own nullity uncertainty (join both branches when y's nullity is
-    TOP) but NOT for cycle/sharing uncertainty; the caller handles that
-    dimension separately, since the two kinds of uncertainty are
-    independent and each needs its own join."""
+    TOP) but NOT for cycle/sharing uncertainty."""
     if s.nullity[y] == D.NONNULL:
         return _apply_splice(s, x, y)
     if s.nullity[y] == D.TOP_NULLITY:
@@ -483,21 +466,19 @@ def do_assign_deref(s, x, y, aux=None):
             return fresh
     else:
         fresh = s
-    for z in range(n + 1):  # + NULL coordinate: x's own nullity becomes TOP too
+    for z in range(n + 1):
         if z != x:
             fresh = D.set_eq(fresh, x, z, D.UNKNOWN)
     fresh = D.set_succ(fresh, x, None)
     for z in range(n):
-        # x's nullity is genuinely TOP here (y.n's successor being
-        # unknown includes "y.n is NULL"), so the sound answer for
+        # x's nullity is genuinely TOP here, so the sound answer for
         # z -> x must cover BOTH "x turns out to be a real node"
-        # (shift of the old z -> y fact) AND "x turns out NULL" (NO) --
-        # i.e. their join, not just the shifted value alone.
+        # (shift of the old z -> y fact) AND "x turns out NULL" (NO)
         fresh = D.set_reach(fresh, z, x, D.reach_join(D.reach_shift(old_reach_col_y[z]), D.NO))
     for w in range(n):
         if w != x:
             fresh = D.set_reach(fresh, x, w, D.TOP_REACH)
-    fresh = D.set_reach(fresh, x, x, D.TOP_REACH)  # nullity of x unknown; refined by later assume
+    fresh = D.set_reach(fresh, x, x, D.TOP_REACH)  # nullity of x unknown
     fresh = D.set_succ(fresh, y, x)
     result = D.close_eq(fresh)
     for w in range(n):
@@ -518,46 +499,23 @@ def _do_assign_deref_known_succ(s, x, y, succ_y, aux):
     if D.is_bottom(out):
         return out
     for z in range(n):
-        # The "via y, then one more hop" derivation only models chains
-        # through a node genuinely distinct from the one x is being
-        # aliased to. For z == x itself or z == succ_y (the very node
-        # x now aliases), reach[z][x] is already exactly pinned by
-        # copy_row's aliasing (trivial self-reach); re-deriving it
-        # from the stale pre-overwrite `reach[z][y]` snapshot doesn't
-        # apply here and spuriously "contradicts" the correct copied
-        # value, so leave those two reflexive cells untouched.
+        # Skip x and succ_y: their reach[z][x] is already set by copy_row.
+        # Re-deriving from stale reach[z][y] would falsely contradict it.
         if z == x or z == succ_y:
             continue
         # Skip shift if z does not reach y
         if old_reach_col_y[z] == D.NO:
             continue
-        # `succ_y` being a *known* alias does not mean it is *non-null*:
-        # it can itself be an alias to a NULL-valued slot (e.g. a chain
-        # of free_var_slot redirects that eventually bottoms out at NULL).
-        # Shifting reach[z][y] by one hop asserts "z reaches x", which
-        # is only sound reasoning when x is confirmed to actually BE a
-        # node. When x's nullity isn't confirmed NONNULL, the true answer
-        # must also cover "x turns out NULL, so z does not reach it at
-        # all" (NO) -- mirroring the "unknown successor" branch above,
-        # which already gets this right via reach_join(shift(...), NO).
-        # Without this, z == y hits it hardest: reach[y][y] is always the
-        # trivial reflexive ODD, so its shift is unconditionally EVEN,
-        # directly contradicting a correctly-copied NO whenever x turns out
-        # NULL -- a false contradiction, not a real one, that made a perfectly
-        # reachable program point look like BOTTOM (unreachable).
+        # If x might be NULL, join shifted reach with NO (x may not exist).
+        # Without this, a shifted EVEN can contradict a copied NO → false BOTTOM.
         shifted = D.reach_shift(old_reach_col_y[z])
         derived = shifted if out.nullity[x] == D.NONNULL else D.reach_join(shifted, D.NO)
         combined = _combine_prefer_derived(out.reach[z][x], derived)
         if combined is None:
             return D.BOTTOM  # the two soundly-derived facts contradict
         out = D.set_reach(out, z, x, combined)
-    # x is now the node y.n (aliased to succ_y): record `succ[y] = x`
-    # too, matching the other two branches, so the exact `y.n == x` fact
-    # is representation-identical on all paths and survives their join
-    # (the assert checker reads it back through _resolve_succ).
-    # this is only correct when y != x. When x == y (a self-dereference,
-    # `x := x.n`), `out` already has slot y == x OVERWRITTEN by copy_row
-    # above to represent the NEW value (x's old content).
+
+    # Skip when y == x (self-dereference)
     if y == x:
         return out
     return D.set_succ(out, y, x)
@@ -696,17 +654,10 @@ def make_transfer(var_index, edge_aux):
 # ---------------------------------------------------------------------------
 # assert checking
 #
-# Same idea as the Parity analysis's coset enumeration (see parity/analysis.py
-# docstring): checking each disjunct's conjunction for entailment separately
-# is sound but incomplete -- e.g. `assert (ODD x xx)(EVEN x xx)` just means
-# "x reaches xx, parity unspecified" (reach[x][xx] == EITHER), and neither
-# disjunct alone is entailed even though the OR is a tautology given that
-# fact. We generalize: gather the *cells* (reach/nullity/eq entries) the
-# formula actually depends on, enumerate every concrete combination each
-# cell's abstract value admits, and require the ORC formula to hold for
-# every combination. This stays exact because each cell already stores its
-# outcome-set as one of a handful of named lattice elements (NO/ODD/EVEN/
-# EITHER/TOP, etc.) rather than a bare "may/must" flag.
+# If the abstract state says reach[x][y] = EITHER, checking each disjunct
+# independently fails, even though their OR is a tautology. To fix this, we
+# gather all abstract cells the formula mentions (reach/eq/nullity), enumerate
+# all their possible concrete values, and ensure the formula holds for them.
 # ---------------------------------------------------------------------------
 
 import itertools
@@ -803,16 +754,11 @@ def check_assert(s, orc, var_index):
     keys = list(cells.keys())
     domains = [sorted(cells[k]) for k in keys]
 
-    # Consistency links: if ('reach', a, b1) and ('reach', a, b2) are both
-    # being enumerated and succ[b1] == b2 exactly (b2 is b1's known,
-    # single-hop successor), then reach[a][b2] must equal
-    # shift(reach[a][b1]) in every real concrete state -- the two cells
-    # aren't actually independent, even though they're stored as separate
-    # table entries. Without this, enumeration invents impossible
-    # combinations (found via testing: this alone caused a false
-    # "possibly violated" on `assert (ODD x xx)(ODD x z)` in the given
-    # example, since reach[x][xx] and reach[x][z] -- z being xx's direct
-    # successor -- always move together but were checked independently).
+    # Consistency links: prevent enumerating impossible worlds.
+    # If b2 is the known direct successor of b1 (succ[b1] == b2), then
+    # reach[a][b2] MUST be exactly one hop past reach[a][b1]. We filter out
+    # any generated combination that violates this physical dependency to
+    # avoid false assert violations on cells that always move together.
     reach_keys = [k for k in keys if k[0] == "reach"]
     links = []
     for k1 in reach_keys:
