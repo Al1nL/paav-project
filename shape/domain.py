@@ -167,8 +167,6 @@ def get_eq(s, x, y):
 
 
 def get_reach(s, x, y):
-    if x == y:
-        return s.reach[x][y]
     return s.reach[x][y]
 
 

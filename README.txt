@@ -83,6 +83,16 @@ All five verify with no issues on the current code.
 ### Shape (`shape/interesting-tests/`)
 1. `1-given-example.txt` — the project's own example. All 9 assertions
    verify, with zero safety warnings.
+
+   **Typo correction:** the project PDF's own listing of this example is
+   internally inconsistent: `L31 t := yy.n L32` targets node `L32`, but the
+   two edges that should originate there are instead labeled `L34 assume
+   (t = NULL) L40` / `L34 assume (t != NULL) L35` — `L32` and `L34` never
+   otherwise appear, so as written the CFG has a dangling node `L32` with no
+   outgoing edges and an unreachable node `L34`. We use `L32` consistently
+   for both (i.e. the two `assume` edges leave from `L32`, matching `L31`'s
+   target) — the only reading that makes this part of the CFG well-formed
+   and symmetric with the `xx`-traversal loop just above it.
 2. `2-sharing-violation.txt` — PDF "Additional examples" #1: correctly
    reports a *certain* `SHARING` violation; the assertions downstream of
    the now-invalid write correctly drop to unverified.
