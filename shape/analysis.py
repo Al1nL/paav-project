@@ -30,6 +30,46 @@ def eq_effective(s, x, y):
     return D.get_eq(s, x, y)
 
 
+def _clear_eq_row(s, coord, upto, exclude):
+    """Reset eq[coord][z] to UNKNOWN for z in range(upto), skipping `exclude`."""
+    for z in range(upto):
+        if z in exclude:
+            continue
+        s = D.set_eq(s, coord, z, D.UNKNOWN)
+    return s
+
+
+def _copy_eq_row(s, dst, src, upto, exclude):
+    """Copy eq[dst][z] := eq[src][z] for z in range(upto), skipping `exclude`."""
+    for z in range(upto):
+        if z in exclude:
+            continue
+        s = D.set_eq(s, dst, z, D.get_eq(s, src, z))
+    return s
+
+
+def _copy_reach_rowcol(s, dst, src, n, exclude):
+    """Copy reach[dst][z] := reach[src][z] and reach[z][dst] := reach[z][src]
+    for z in range(n), skipping `exclude`."""
+    for z in range(n):
+        if z in exclude:
+            continue
+        s = D.set_reach(s, dst, z, s.reach[src][z])
+        s = D.set_reach(s, z, dst, s.reach[z][src])
+    return s
+
+
+def _sever_reach_row(s, coord, n, exclude, val=D.TOP_REACH):
+    """Set reach[coord][z] and reach[z][coord] to `val` for z in range(n),
+    skipping `exclude`."""
+    for z in range(n):
+        if z in exclude:
+            continue
+        s = D.set_reach(s, coord, z, val)
+        s = D.set_reach(s, z, coord, val)
+    return s
+
+
 def free_var_slot(s, x, aux):
     """Save variable x's identity into scratch slot `aux` before x is overwritten."""
     if D.is_bottom(s):
@@ -37,20 +77,10 @@ def free_var_slot(s, x, aux):
     n = s.n
     # Clear aux to UNKNOWN first: it may carry stale facts from a prior
     # fixpoint iteration that would falsely contradict x's current identity.
-    for z in range(n + 1):
-        if z == x or z == aux:
-            continue
-        s = D.set_eq(s, aux, z, D.UNKNOWN)
-    for z in range(n + 1):
-        if z == x or z == aux:
-            continue
-        s = D.set_eq(s, aux, z, D.get_eq(s, x, z))
+    s = _clear_eq_row(s, aux, n + 1, {x, aux})
+    s = _copy_eq_row(s, aux, x, n + 1, {x, aux})
     s = D.set_eq(s, aux, x, D.UNKNOWN)
-    for z in range(n):
-        if z == x or z == aux:
-            continue
-        s = D.set_reach(s, aux, z, s.reach[x][z])
-        s = D.set_reach(s, z, aux, s.reach[z][x])
+    s = _copy_reach_rowcol(s, aux, x, n, {x, aux})
     s = D.set_reach(s, aux, aux, s.reach[x][x])
     s = D.set_succ(s, aux, s.succ[x])
     s = D.set_claimed(s, aux, True)  # Mark scratch slot as claimed
@@ -58,15 +88,8 @@ def free_var_slot(s, x, aux):
         if w != x and w != aux and s.succ[w] == x:
             s = D.set_succ(s, w, aux)
     # free slot x: fresh, ready for the new value
-    for z in range(n + 1):
-        if z == x:
-            continue
-        s = D.set_eq(s, x, z, D.UNKNOWN)
-    for z in range(n):
-        if z == x:
-            continue
-        s = D.set_reach(s, x, z, D.TOP_REACH)
-        s = D.set_reach(s, z, x, D.TOP_REACH)
+    s = _clear_eq_row(s, x, n + 1, {x})
+    s = _sever_reach_row(s, x, n, {x})
     s = D.set_reach(s, x, x, D.TOP_REACH)
     s = D.set_succ(s, x, None)
     return D.close_eq(s)
@@ -80,21 +103,11 @@ def copy_row(s, dst, src, aux=None):
         # Populate aux as an exact snapshot of dst's unchanged identity to preserve its slot allocation.
         if aux is not None:
             n = s.n
-            for z in range(n + 1):
-                if z == dst or z == aux:
-                    continue
-                s = D.set_eq(s, aux, z, D.UNKNOWN)
-            for z in range(n + 1):
-                if z == dst or z == aux:
-                    continue
-                s = D.set_eq(s, aux, z, D.get_eq(s, dst, z))
+            s = _clear_eq_row(s, aux, n + 1, {dst, aux})
+            s = _copy_eq_row(s, aux, dst, n + 1, {dst, aux})
             # aux is an exact alias of dst when dst is not overwritten
             s = D.set_eq(s, aux, dst, D.TRUE)
-            for z in range(n):
-                if z == dst or z == aux:
-                    continue
-                s = D.set_reach(s, aux, z, s.reach[dst][z])
-                s = D.set_reach(s, z, aux, s.reach[z][dst])
+            s = _copy_reach_rowcol(s, aux, dst, n, {dst, aux})
             s = D.set_reach(s, aux, aux, s.reach[dst][dst])
             s = D.set_reach(s, aux, dst, s.reach[dst][dst])
             s = D.set_reach(s, dst, aux, s.reach[dst][dst])
@@ -110,19 +123,9 @@ def copy_row(s, dst, src, aux=None):
         if D.is_bottom(s):
             return s
     n = s.n
-    for z in range(n + 1):  # Reset dst eq to UNKNOWN before overwriting with src's values
-        if z == dst:
-            continue
-        s = D.set_eq(s, dst, z, D.UNKNOWN)
-    for z in range(n + 1):  # Copy src's nullity and other eq facts
-        if z == dst:
-            continue
-        s = D.set_eq(s, dst, z, D.get_eq(s, src, z))
-    for z in range(n):
-        if z == dst:
-            continue
-        s = D.set_reach(s, dst, z, s.reach[src][z] if z != src else s.reach[src][src])
-        s = D.set_reach(s, z, dst, s.reach[z][src])
+    s = _clear_eq_row(s, dst, n + 1, {dst})  # Reset dst eq to UNKNOWN before overwriting with src's values
+    s = _copy_eq_row(s, dst, src, n + 1, {dst})  # Copy src's nullity and other eq facts
+    s = _copy_reach_rowcol(s, dst, src, n, {dst})
     s = D.set_reach(s, dst, dst, s.reach[src][src])
     s = D.set_succ(s, dst, s.succ[src])
     return D.close_eq(s)
@@ -138,17 +141,10 @@ def reset_as_null(s, x, aux=None):
         if D.is_bottom(s):
             return s
     n = s.n
-    for z in range(n):
-        if z == x:
-            continue
-        s = D.set_eq(s, x, z, D.UNKNOWN)  # forget stale relations first
+    s = _clear_eq_row(s, x, n, {x})  # forget stale relations first
     s = D.set_nullity(s, x, D.NULL)
     s = D.set_succ(s, x, None)
-    for z in range(n):
-        if z == x:
-            continue
-        s = D.set_reach(s, x, z, D.NO)
-        s = D.set_reach(s, z, x, D.NO)
+    s = _sever_reach_row(s, x, n, {x}, val=D.NO)
     s = D.set_reach(s, x, x, D.NO)
     # close_eq re-derives "x equals every other NULL var" (and "x differs
     # from every other NONNULL var") from the fact that eq[x][NULL] = TRUE
@@ -164,10 +160,7 @@ def reset_as_fresh_new(s, x, aux=None):
         if D.is_bottom(s):
             return s
     n = s.n
-    for z in range(n):
-        if z == x:
-            continue
-        s = D.set_eq(s, x, z, D.UNKNOWN)  # forget stale relations first
+    s = _clear_eq_row(s, x, n, {x})  # forget stale relations first
     for z in range(n):
         if z == x:
             continue
@@ -178,6 +171,15 @@ def reset_as_fresh_new(s, x, aux=None):
     s = D.set_nullity(s, x, D.NONNULL)
     s = D.set_succ(s, x, "NULL")
     s = D.set_reach(s, x, x, D.ODD)
+    return D.close_eq(s)
+
+
+def _narrow_to_nonnull(s, idx):
+    """Assuming nullity[idx] != NULL already (caller must check), narrow it
+    to NONNULL and re-close the eq table. A no-op if already NONNULL."""
+    if s.nullity[idx] == D.NONNULL:
+        return s
+    s = D.set_nullity(s, idx, D.NONNULL)
     return D.close_eq(s)
 
 
@@ -271,11 +273,9 @@ def do_field_assign(s, x, y, n_vars=None):
         return D.BOTTOM
     if s.nullity[x] == D.NULL:
         return D.BOTTOM  # every execution reaching here crashes
-    if s.nullity[x] == D.TOP_NULLITY:
-        s = D.set_nullity(s, x, D.NONNULL)  # only the non-crash branch survives
-        s = D.close_eq(s)
-        if D.is_bottom(s):
-            return s
+    s = _narrow_to_nonnull(s, x)  # only the non-crash branch survives
+    if D.is_bottom(s):
+        return s
 
     if y is None:  # x.n := NULL
         n = s.n
@@ -327,7 +327,6 @@ def do_field_assign(s, x, y, n_vars=None):
     s = D.set_succ(s, x, y)
     s = _propagate_succ_to_aliases(s, x, y)
 
-    n = s.n
     cyc = would_create_cycle(s, x, y)
     conflict = find_sharing_conflict(s, x, y, n_vars)
     definite_break = (cyc is True) or (conflict is not None and conflict != "MAYBE")
@@ -358,9 +357,7 @@ def _weaken_for_uncertain_write(s, x, y, n):
     """Weaken reachability table when a field write breaks acyclic/unshared invariants."""
     old_reach_col_x = [s.reach[z][x] for z in range(n)]
     old_reach_row_y = [s.reach[y][w] for w in range(n)]
-    for z in range(n):
-        s = D.set_reach(s, x, z, D.TOP_REACH)
-        s = D.set_reach(s, z, x, D.TOP_REACH)
+    s = _sever_reach_row(s, x, n, set())
     for z in range(n):
         if old_reach_col_x[z] == D.NO:
             continue
@@ -438,11 +435,9 @@ def do_assign_deref(s, x, y, aux=None):
     # whole state.
     if s.nullity[y] == D.NULL:
         return D.BOTTOM
-    if s.nullity[y] == D.TOP_NULLITY:
-        s = D.set_nullity(s, y, D.NONNULL)
-        s = D.close_eq(s)
-        if D.is_bottom(s):
-            return s
+    s = _narrow_to_nonnull(s, y)
+    if D.is_bottom(s):
+        return s
 
     succ_y = s.succ[y]
     if succ_y == "NULL":
@@ -572,8 +567,7 @@ def make_transfer(var_index, edge_aux):
             xi = var_index[x]
             if s.nullity[xi] == D.NULL:
                 return D.BOTTOM
-            s = D.set_nullity(s, xi, D.NONNULL)
-            s = D.close_eq(s)
+            s = _narrow_to_nonnull(s, xi)
             if D.is_bottom(s):
                 return s
             s = D.set_reach(s, xi, xi, D.ODD)
@@ -605,34 +599,27 @@ def make_transfer(var_index, edge_aux):
                 sx, sy = s.succ[xi], s.succ[yi]
                 if isinstance(sx, int) and isinstance(sy, int):
                     if D.get_eq(s, sx, sy) == D.FALSE:
-                        return D.BOTTOM 
+                        return D.BOTTOM
                     s = D.set_eq(s, sx, sy, D.TRUE)
                     s = D.close_eq(s)
-                    if D.is_bottom(s):
-                        return s  
-                    s = D.set_succ(s, xi, sx)
-                    s = D.set_succ(s, yi, sx)
                 elif sx == "NULL" and isinstance(sy, int):
                     if s.nullity[sy] == D.NONNULL:
-                        return D.BOTTOM  
+                        return D.BOTTOM
                     s = D.set_nullity(s, sy, D.NULL)
                     s = D.close_eq(s)
-                    if D.is_bottom(s):
-                        return s
-                    s = D.set_succ(s, xi, sx)
-                    s = D.set_succ(s, yi, sx)
                 elif sy == "NULL" and isinstance(sx, int):
                     if s.nullity[sx] == D.NONNULL:
-                        return D.BOTTOM 
+                        return D.BOTTOM
                     s = D.set_nullity(s, sx, D.NULL)
                     s = D.close_eq(s)
-                    if D.is_bottom(s):
-                        return s
-                    s = D.set_succ(s, xi, sx)
-                    s = D.set_succ(s, yi, sx)
                 else:
                     s = D.set_succ(s, xi, None)
                     s = D.set_succ(s, yi, None)
+                    return s
+                if D.is_bottom(s):
+                    return s
+                s = D.set_succ(s, xi, sx)
+                s = D.set_succ(s, yi, sx)
             return s
         if kind == "assume_neq":
             return s  # no general sound refinement
