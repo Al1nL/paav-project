@@ -63,8 +63,13 @@ Each analysis has exactly 5 "interesting" test programs in its
 
 ### Parity (`parity/interesting-tests/`)
 1. `1-given-example.txt` — the project's own example; all asserts verify.
-2. `2-independent-tautology.txt` — unrelated variables; checks the
-   assert-checker doesn't over- or under-claim on trivial tautologies.
+2. `2-decrement-precision-limit.txt` — **deliberately unverifiable**:
+   `j := 4; i := j - 1; assert (ODD i)`. `i` is provably 3 (odd) by hand,
+   but `assign_decr` forgets `i` unconditionally (`parity/analysis.py`)
+   because it can't in general prove `j != 0` (truncation at 0 would make
+   the "flip parity" rule unsound) — a genuine, deliberate precision
+   trade-off, not a bug. Reported "possibly violated" rather than a false
+   "verified".
 3. `3-negative-unconditional-even.txt` — **deliberately unverifiable**
    (`EVEN i` unconditionally isn't actually always true here); shows the
    tool correctly reports "possibly violated" rather than a false
@@ -78,7 +83,10 @@ Each analysis has exactly 5 "interesting" test programs in its
    contrast/control to show where the relational machinery is/isn't
    actually earning its keep.
 
-All five verify with no issues on the current code.
+Tests 1, 4, and 5 verify with no issues; tests 2 and 3 each contain a
+deliberately unverifiable assertion (one because it's genuinely false,
+one because of a documented precision limit) and are correctly reported
+as "possibly violated".
 
 ### Shape (`shape/interesting-tests/`)
 1. `1-given-example.txt` — the project's own example. All 9 assertions
@@ -93,9 +101,18 @@ All five verify with no issues on the current code.
    for both (i.e. the two `assume` edges leave from `L32`, matching `L31`'s
    target) — the only reading that makes this part of the CFG well-formed
    and symmetric with the `xx`-traversal loop just above it.
-2. `2-sharing-violation.txt` — PDF "Additional examples" #1: correctly
-   reports a *certain* `SHARING` violation; the assertions downstream of
-   the now-invalid write correctly drop to unverified.
+2. `2-disjunct-cap-precision-limit.txt` — **deliberately unverifiable**:
+   two pointers `p`, `q` are moved together (both reset to `NULL`, or
+   both left alone) across 3 independent nondeterministic branches, so on
+   all 8 concrete paths their nullity stays correlated — a genuine
+   invariant, true by construction. `DisjunctiveShapeState` caps live
+   per-branch states at `max_disjuncts=4` (`shape/domain.py`); the 3rd
+   branch point forces 8 live states to be pairwise-joined back down to
+   4, and whichever pair mixes a both-`NULL` path with a both-`NONNULL`
+   path collapses `p`/`q`'s nullity independently to unknown, losing the
+   correlation. A genuine, structural precision limit of the bounded
+   disjunctive domain (with only 2 such branches — 4 disjuncts, within
+   the cap — the same assertion correctly verifies), not a soundness bug.
 3. `3-cycle-violation.txt` — PDF "Additional examples" #2: correctly
    reports a *certain* `CYCLE` violation.
 4. `4-merge-aliasing.txt` — PDF "Additional examples" #3: safety holds
