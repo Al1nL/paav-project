@@ -162,7 +162,8 @@ python3 -m tests.differential_fuzz_shape            # shape, ground-truth (sever
 python3 tests/loop_differential_check.py            # shape, loop/disjunctive
 ```
 
-### AI disclosure
+## AI disclosure
 
-AI assistance (Claude) was used during this project as a second opinion on design decisions and implementation choices,
-and to generate additional tests and help find edge cases in the analyses.
+AI assistance (Claude) was used during this project as a second opinion on
+design decisions and implementation choices, and to generate additional
+tests and help find edge cases in the analyses.
