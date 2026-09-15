@@ -65,11 +65,17 @@ Each analysis has exactly 5 "interesting" test programs in its
 1. `1-given-example.txt` — the project's own example; all asserts verify.
 2. `2-decrement-precision-limit.txt` — **deliberately unverifiable**:
    `j := 4; i := j - 1; assert (ODD i)`. `i` is provably 3 (odd) by hand,
-   but `assign_decr` forgets `i` unconditionally (`parity/analysis.py`)
-   because it can't in general prove `j != 0` (truncation at 0 would make
-   the "flip parity" rule unsound) — a genuine, deliberate precision
-   trade-off, not a bug. Reported "possibly violated" rather than a false
-   "verified".
+   but `assign_decr` only refines `i` when `j` is *provably odd*
+   (`parity/analysis.py`) — odd values are never 0, so the "flip parity"
+   rule is sound; otherwise (as here, where `j`'s tracked parity is EVEN)
+   truncation at 0 could make the flip unsound, so `i` is forgotten
+   instead. The domain only tracks `j`'s parity, not its exact value, so
+   it cannot tell this EVEN `j` is actually the nonzero value 4 rather
+   than 0 — a genuine, deliberate precision trade-off (see
+   `TestDecrementIsConservative` / `TestDecrementRefinesWhenJIsOdd` in
+   `tests/test_parity_analysis.py` for the odd-`j` case where the
+   refinement *does* fire), not a bug. Reported "possibly violated"
+   rather than a false "verified".
 3. `3-negative-unconditional-even.txt` — **deliberately unverifiable**
    (`EVEN i` unconditionally isn't actually always true here); shows the
    tool correctly reports "possibly violated" rather than a false
