@@ -27,11 +27,24 @@ def make_transfer(var_index, aux_idx):
             _, i, j = cmd
             return D.assign_linear(s, var_index[i], var_index[j], flip=True, aux_idx=aux_idx)
         if kind == "assign_decr":
-            _, i, j = cmd
-            j_idx = var_index[j]
-            if D.entails(s, 1 << j_idx, 1):   # j provably odd => j != 0, flip is sound
-                return D.assign_linear(s, var_index[i], j_idx, flip=True, aux_idx=aux_idx)
-            return D.forget(s, var_index[i])  # j possibly 0 (even/unknown), forget i to be sound
+            _, i, j = cmd                                
+            i_idx, j_idx = var_index[i], var_index[j]    
+            j_bit = 1 << j_idx                           
+            # Split s into its two exhaustive sub-cases: j odd, j even.
+            # Each meet_equation call keeps only the part of s consistent
+            s_odd = D.meet_equation(s, j_bit, 1)
+            s_even = D.meet_equation(s, j_bit, 0)
+
+            # j odd => j != 0 => flip is sound.
+            result_odd = (D.assign_linear(s_odd, i_idx, j_idx, flip=True, aux_idx=aux_idx)
+                        if not D.is_bottom(s_odd) else D.BOTTOM)
+
+            # j even => j could be 0, so forget i entirely.
+            result_even = D.forget(s_even, i_idx) if not D.is_bottom(s_even) else D.BOTTOM
+
+            # Recombine: the two sub-cases exhaustively cover s, and each
+            # was transformed soundly on its own, so their join covers all of s.
+            return D.join(result_odd, result_even)
         if kind == "assign_const":
             _, i, k = cmd
             return D.assign_linear(s, var_index[i], None, flip=bool(k % 2))
