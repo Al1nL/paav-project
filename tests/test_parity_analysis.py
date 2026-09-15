@@ -130,7 +130,7 @@ class TestRequiredInterestingTestsRegression(unittest.TestCase):
 
     EXPECTATIONS = {
         "1-given-example.txt": True,
-        "2-independent-tautology.txt": True,
+        "2-decrement-precision-limit.txt": False,
         "3-negative-unconditional-even.txt": False,
         "4-multihop-chain.txt": True,
         "5-double-increment-nonrelational-ok.txt": True,

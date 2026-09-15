@@ -570,10 +570,24 @@ class TestOfficialInterestingTestsRegression(unittest.TestCase):
         self.assertEqual(oks.count(True), 9)
         self.assertEqual(oks.count(False), 0)
 
-    def test_sharing_violation_flagged(self):
-        _, _, _, safety_results, _ = self._run("2-sharing-violation.txt")
-        kinds = [issue for _, issues in safety_results for issue in issues]
-        self.assertTrue(any("SHARING" in k for k in kinds))
+    def test_disjunct_cap_precision_limit(self):
+        # p and q move together on every one of 3 independent nondet
+        # branches, so on all 8 concrete paths they end up correlated
+        # (both NULL or both NONNULL) -- a genuine invariant, true by
+        # construction. DisjunctiveShapeState caps at max_disjuncts=4
+        # (shape/domain.py), so the 3rd branch point forces 8 live
+        # per-path states to be pairwise-joined back down to 4; whichever
+        # pair mixes a both-NULL path with a both-NONNULL path collapses
+        # to independent TOP/TOP nullity for p and q, losing the
+        # correlation. This is a real, structural precision limit of the
+        # bounded disjunctive domain (verified with only 2 diamonds --
+        # 4 disjuncts, within the cap -- the same assert correctly
+        # VERIFIES instead), not a soundness bug: the tool still never
+        # falsely reports "verified".
+        _, _, assert_results, safety_results, _ = self._run("2-disjunct-cap-precision-limit.txt")
+        self.assertEqual(len(safety_results), 0)
+        oks = [ok for _, ok in assert_results]
+        self.assertEqual(oks, [False])
 
     def test_cycle_violation_flagged(self):
         _, _, _, safety_results, _ = self._run("3-cycle-violation.txt")
