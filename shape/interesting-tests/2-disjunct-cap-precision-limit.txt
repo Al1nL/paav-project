@@ -1,46 +1,29 @@
-x y z xx yy zz t p
+p q
 
-L8 t := new     L9 
-L9 t.n := NULL  L10 
-L10 t.n := x    L11
-L11 x := t      L12 
+L0 p := new         L1
+L1 p.n := NULL      L2
+L2 q := new         L3
+L3 q.n := NULL      L4
 
-L12 t := new    L13  
-L13 t.n := NULL L14 
-L14 t.n := y    L15 
-L15 y := t      L6 
+L4  assume(TRUE)    L5a
+L4  assume(TRUE)    L5b
+L5a p := NULL       L6a
+L6a q := NULL       L10
+L5b skip            L6b
+L6b skip            L10
 
-L6 assume(TRUE) L8 
-L6 assume(TRUE) L18 
+L10 assume(TRUE)    L11a
+L10 assume(TRUE)    L11b
+L11a p := NULL      L12a
+L12a q := NULL      L20
+L11b skip           L12b
+L12b skip           L20
 
-L18 z := new    L19
-L19 p := z      L20
- 
-L20 xx := x            L21
-L21 t := xx.n          L22
-L22 assume(t = NULL)   L30
-L22 assume(t != NULL)  L23
-L23 xx := t            L21
+L20 assume(TRUE)    L21a
+L20 assume(TRUE)    L21b
+L21a p := NULL      L22a
+L22a q := NULL      L30
+L21b skip           L22b
+L22b skip           L30
 
-L30 yy := y            L31
-L31 t := yy.n          L32
-L32 assume(t = NULL)   L40
-L32 assume(t != NULL)  L35
-L35 yy := t            L31
-
-L40 xx.n := NULL       L41 
-L41 xx.n := z          L42 
-
-L42 yy.n := NULL       L43
-L43 yy.n := z          L50
-
-L50 assert (t = NULL)  L51
-L51 assert (z != NULL) L52
-L52 assert (LS x p)	   L53
-L53 assert (LS y yy)   L54
-L54 assert (NOLS x y)  L55
-L55 assert (p = xx.n)  L56
-L56 assert (t = yy.n)  L57
-
-L57 assert (ODD x xx ) (EVEN x xx)  L58
-L58 assert (ODD x xx ) (ODD x z)    L59
+L30 assert (p = NULL q = NULL)(p != NULL q != NULL)  L31

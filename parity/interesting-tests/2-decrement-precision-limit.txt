@@ -1,6 +1,5 @@
 i j
 
-L0  i := ?                         L1
-L1  j := ?                         L2
-L2  assert (EVEN i) (ODD i)        L3
-L3  assert (EVEN j) (ODD j)        L4
+L0  j := 4          L1
+L1  i := j - 1      L2
+L2  assert (ODD i)  L3
