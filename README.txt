@@ -166,6 +166,4 @@ python3 tests/loop_differential_check.py            # shape, loop/disjunctive
 
 AI assistance (Claude) was used during this project as a second opinion on
 design decisions and implementation choices, and to generate additional
-tests and help find edge cases in the analyses. All domain design, formal
-soundness/termination arguments, and final implementation decisions are
-the author's own.
+tests and help find edge cases in the analyses.
