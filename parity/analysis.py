@@ -27,9 +27,11 @@ def make_transfer(var_index, aux_idx):
             _, i, j = cmd
             return D.assign_linear(s, var_index[i], var_index[j], flip=True, aux_idx=aux_idx)
         if kind == "assign_decr":
-            # i := j-1: forget i conservatively.
             _, i, j = cmd
-            return D.forget(s, var_index[i])
+            j_idx = var_index[j]
+            if D.entails(s, 1 << j_idx, 1):   # j provably odd => j != 0, flip is sound
+                return D.assign_linear(s, var_index[i], j_idx, flip=True, aux_idx=aux_idx)
+            return D.forget(s, var_index[i])  # j possibly 0 (even/unknown), forget i to be sound
         if kind == "assign_const":
             _, i, k = cmd
             return D.assign_linear(s, var_index[i], None, flip=bool(k % 2))

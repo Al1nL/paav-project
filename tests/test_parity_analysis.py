@@ -93,11 +93,11 @@ class TestUnreachableBranchIsVacuouslyVerified(unittest.TestCase):
 
 
 class TestDecrementIsConservative(unittest.TestCase):
-    """i := j-1 must forget i entirely (report Sec 2.3): even though j is
-    only ever the literal constant 0 here (so i really is always Even at
-    runtime), the domain only tracks j's *parity*, not its exact value,
-    so it cannot soundly conclude i is anything -- this is a genuine,
-    documented precision loss, not a bug."""
+    """i := j-1: 0-1 = 0 in this language, so the parity flip normal
+    subtraction gives is only sound when j != 0. j EVEN does not rule
+    out j == 0 (0 is even), so the domain must forget i entirely in
+    that case. j ODD DOES rule out j == 0, so in that case the domain
+    refines i to the opposite parity instead"""
 
     def test_single_disjunct_even_is_not_provable(self):
         program = """\
@@ -121,6 +121,39 @@ class TestDecrementIsConservative(unittest.TestCase):
         (ok,) = results_of(program)
         self.assertTrue(ok)
 
+class TestDecrementRefinesWhenJIsOdd(unittest.TestCase):
+    """i := j-1 when j is PROVABLY odd: odd j is never 0, so ordinary
+    subtraction applies unconditionally and the parity flip is sound --
+    unlike the j-even/unknown case above, i should be provably pinned,
+    not forgotten."""
+
+    def test_end_to_end_even_i_is_provable(self):
+        program = """\
+            i j
+
+            L0 j := 1 L1
+            L1 i := j - 1 L2
+            L2 assert (EVEN i) L3
+            """
+        (ok,) = results_of(program)
+        self.assertTrue(ok)
+
+    def test_dispatch_level_pins_opposite_parity(self):
+        var_index = {"i": 0, "j": 1}
+        transfer = make_transfer(var_index, aux_idx=2)
+        s = pin(D.top(3), 1, 1)  # j = Odd
+        result = transfer(types.SimpleNamespace(cmd=("assign_decr", "i", "j")), s)
+        self.assertTrue(D.entails(result, 1 << 0, 0))   # i must be Even
+        self.assertFalse(same_set(result, D.forget(s, 0)))  # strictly more precise than forgetting
+
+    def test_self_aliased_still_uses_pre_assignment_value(self):
+        # i := i - 1 with i itself pinned Odd (report Sec 2.2's aliasing
+        # note: the same care i := i+1 needs applies here too).
+        var_index = {"i": 0}
+        transfer = make_transfer(var_index, aux_idx=1)
+        s = pin(D.top(2), 0, 1)  # i = Odd
+        result = transfer(types.SimpleNamespace(cmd=("assign_decr", "i", "i")), s)
+        self.assertTrue(D.entails(result, 1 << 0, 0))   # i must now be Even
 
 class TestRequiredInterestingTestsRegression(unittest.TestCase):
     """Re-run the 5 files required by the project spec and check their
