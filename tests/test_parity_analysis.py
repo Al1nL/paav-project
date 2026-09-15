@@ -123,9 +123,8 @@ class TestDecrementIsConservative(unittest.TestCase):
 
 class TestDecrementRefinesWhenJIsOdd(unittest.TestCase):
     """i := j-1 when j is PROVABLY odd: odd j is never 0, so ordinary
-    subtraction applies unconditionally and the parity flip is sound --
-    unlike the j-even/unknown case above, i should be provably pinned,
-    not forgotten."""
+    subtraction applies unconditionally and the parity flip is sound,
+    i should be provably pinned, not forgotten."""
 
     def test_end_to_end_even_i_is_provable(self):
         program = """\
